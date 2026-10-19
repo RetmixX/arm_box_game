@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#E4E7EA">
+  <title>ARM·BOX — крестики-нолики</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%23FF5A1F'/%3E%3Ccircle cx='8' cy='8' r='3' fill='%231F242B'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="assets/game.css">
+</head>
+<body>
+  <header class="bar">
+    <a class="brand" href="./" title="Пульт">ARM<span>·</span>BOX <small>крестики-нолики</small></a>
+
+    <nav class="seg tabs" id="tabs" role="tablist" aria-label="Разделы">
+      <button role="tab" data-page="play" aria-selected="true">Игра</button>
+      <button role="tab" data-page="setup" aria-selected="false">Настройка</button>
+    </nav>
+
+    <div class="bar-right">
+      <span class="status" id="st-X"><i></i><span>Рука ✕</span></span>
+      <span class="status" id="st-O"><i></i><span>Рука ○</span></span>
+      <button class="icon" id="theme" title="Тема" aria-label="Сменить тему"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 1.5a6.5 6.5 0 0 1 0 13z" fill="currentColor"/></svg></button>
+      <button class="icon" id="fullscreen" title="Во весь экран" aria-label="Во весь экран">
+        <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ============================ ИГРА ============================ -->
+  <main class="play" id="page-play">
+    <aside class="col col-left">
+      <section class="card">
+        <h2>Партия</h2>
+        <div class="field">
+          <span class="field-label">Режим</span>
+          <div class="seg wide" id="mode" role="radiogroup" aria-label="Режим">
+            <button data-v="pvp" role="radio">Вдвоём</button>
+            <button data-v="pvr" role="radio">С роботом</button>
+          </div>
+        </div>
+        <div class="field" data-show="pvr">
+          <span class="field-label">Вы играете</span>
+          <div class="seg wide" id="human" role="radiogroup" aria-label="Ваш знак">
+            <button data-v="X" role="radio">✕ <small>первый ход</small></button>
+            <button data-v="O" role="radio">○</button>
+          </div>
+        </div>
+        <div class="field" data-show="pvr">
+          <span class="field-label">Сложность</span>
+          <div class="seg wide" id="level" role="radiogroup" aria-label="Сложность">
+            <button data-v="easy" role="radio">Легко</button>
+            <button data-v="medium" role="radio">Средне</button>
+            <button data-v="hard" role="radio">Непобедимый</button>
+          </div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="physical" role="switch">
+          <span class="toggle-track" aria-hidden="true"></span>
+          <span class="toggle-text">Руки рисуют ходы<small>выключите, чтобы играть только на экране</small></span>
+        </label>
+      </section>
+
+      <section class="card score">
+        <div class="score-row">
+          <div><b id="sc-X">0</b><span id="sc-X-name">Игрок ✕</span></div>
+          <div class="score-draw"><b id="sc-D">0</b><span>ничьи</span></div>
+          <div><b id="sc-O">0</b><span id="sc-O-name">Игрок ○</span></div>
+        </div>
+        <button class="link" id="score-reset">обнулить счёт</button>
+      </section>
+
+      <div class="actions">
+        <button class="btn signal" id="new-game">Новая партия <kbd>N</kbd></button>
+      </div>
+    </aside>
+
+    <section class="col col-board">
+      <div class="turn" id="turn" aria-live="polite">
+        <span class="turn-mark" id="turn-mark">✕</span>
+        <div>
+          <p class="turn-title" id="turn-title">Ход ✕</p>
+          <p class="turn-text" id="turn-text">Выберите клетку</p>
+        </div>
+      </div>
+
+      <div class="board-wrap">
+        <div class="axis-cols" aria-hidden="true"><span>А</span><span>Б</span><span>В</span></div>
+        <div class="axis-rows" aria-hidden="true"><span>3</span><span>2</span><span>1</span></div>
+        <div class="board" id="board" role="grid" aria-label="Игровое поле"></div>
+      </div>
+
+      <div class="progress" id="progress" hidden>
+        <div class="progress-head"><span id="progress-who">Рука ✕</span><span id="progress-step">—</span></div>
+        <div class="progress-bar"><i id="progress-bar"></i></div>
+      </div>
+
+      <div class="alert" id="alert" hidden>
+        <p class="alert-title" id="alert-title">Рука не нарисовала знак</p>
+        <p class="alert-text" id="alert-text"></p>
+        <div class="alert-actions">
+          <button class="btn" id="err-retry">Повторить</button>
+          <button class="btn ghost" id="err-accept">Знак нарисован — засчитать</button>
+          <button class="btn ghost" id="err-cancel">Отменить ход</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="col col-right">
+      <section class="card cam-card" id="cam-card">
+        <div class="card-head">
+          <label class="toggle sm">
+            <input type="checkbox" id="cam-toggle" role="switch">
+            <span class="toggle-track" aria-hidden="true"></span>
+            <span class="toggle-text" id="cam-toggle-text">Камера выключена</span>
+          </label>
+          <button class="link" id="cam-big">крупно</button>
+        </div>
+        <div class="cam-frame" id="cam-frame">
+          <img id="cam-img" alt="Лист с полем на камере" hidden>
+          <span class="cam-live" id="cam-live" hidden><i></i>Поле вживую</span>
+          <p class="cam-empty" id="cam-empty">Камера выключена</p>
+        </div>
+      </section>
+
+      <section class="card table-card">
+        <div class="card-head"><h3>Стол сверху</h3><span class="muted">руки и поле</span></div>
+        <canvas id="cv-table" aria-label="Стол сверху: поле и обе руки"></canvas>
+      </section>
+
+      <section class="card arms" id="arm-cards"></section>
+    </aside>
+  </main>
+
+  <!-- ========================== НАСТРОЙКА ========================== -->
+  <main class="setup" id="page-setup" hidden>
+    <section class="card setup-view">
+      <div class="card-head">
+        <h2>Стол сверху</h2>
+        <span class="legend"><i class="lg lg-ok"></i>достижимо <i class="lg lg-bad"></i>вне зоны</span>
+      </div>
+      <canvas id="cv-setup" aria-label="Схема стола для калибровки"></canvas>
+      <ul class="checks" id="checks"></ul>
+    </section>
+
+    <section class="card setup-form">
+      <div class="form">
+        <fieldset>
+          <legend>Устройства <small>одинаково на обеих вебках</small></legend>
+          <div class="dev"><span class="dev-name"><b class="dot x">✕</b>Рука</span><div class="addr">
+            <input class="input mono" data-d="xHost" placeholder="IP" aria-label="IP руки ✕" autocomplete="off" spellcheck="false"><span class="muted">:</span>
+            <input class="input mono" data-d="xPort" placeholder="8000" inputmode="numeric" aria-label="Порт руки ✕" autocomplete="off"></div></div>
+          <div class="dev"><span class="dev-name"><b class="dot x">✕</b>Лампа</span><div class="addr">
+            <input class="input mono" data-d="xLampHost" placeholder="IP руки ✕" aria-label="IP лампы ✕" autocomplete="off" spellcheck="false"><span class="muted">:</span>
+            <input class="input mono" data-d="xLampPort" placeholder="80" inputmode="numeric" aria-label="Порт лампы ✕" autocomplete="off"></div></div>
+          <div class="dev"><span class="dev-name"><b class="dot">○</b>Рука</span><div class="addr">
+            <input class="input mono" data-d="oHost" placeholder="IP" aria-label="IP руки ○" autocomplete="off" spellcheck="false"><span class="muted">:</span>
+            <input class="input mono" data-d="oPort" placeholder="8000" inputmode="numeric" aria-label="Порт руки ○" autocomplete="off"></div></div>
+          <div class="dev"><span class="dev-name"><b class="dot">○</b>Лампа</span><div class="addr">
+            <input class="input mono" data-d="oLampHost" placeholder="IP руки ○" aria-label="IP лампы ○" autocomplete="off" spellcheck="false"><span class="muted">:</span>
+            <input class="input mono" data-d="oLampPort" placeholder="80" inputmode="numeric" aria-label="Порт лампы ○" autocomplete="off"></div></div>
+          <div class="dev"><span class="dev-name"><b class="dot cam">◉</b>Камера</span><div class="addr">
+            <input class="input mono" data-d="camHost" placeholder="192.168.0.105" aria-label="IP камеры" autocomplete="off" spellcheck="false"><span class="muted">:</span>
+            <input class="input mono" data-d="camPort" placeholder="8080" inputmode="numeric" aria-label="Порт камеры" autocomplete="off"></div></div>
+          <div class="row wrap">
+            <span class="hint">Команды</span>
+            <div class="seg sm" id="transport"><button data-v="ws">WebSocket</button><button data-v="http">POST</button></div>
+            <label class="toggle sm right">
+              <input type="checkbox" id="demo" role="switch">
+              <span class="toggle-track" aria-hidden="true"></span>
+              <span class="toggle-text">Демо</span>
+            </label>
+          </div>
+          <div class="row wrap">
+            <button class="btn sm" id="dev-apply">Применить</button>
+            <button class="btn sm ghost" id="dev-test">Проверить связь</button>
+            <span class="right row tight">
+              <button class="link" id="cfg-save">Скачать настройки</button>
+              <button class="link" id="cfg-load">Загрузить</button>
+              <input type="file" id="cfg-file" accept=".json,application/json" hidden>
+            </span>
+          </div>
+          <ul class="checks" id="dev-result"></ul>
+        </fieldset>
+
+        <fieldset>
+          <legend>Калибровка руки</legend>
+          <div class="seg wide" id="edit-side" role="tablist" aria-label="Какую руку настраиваем">
+            <button data-v="X" role="tab">Рука ✕</button>
+            <button data-v="O" role="tab">Рука ○</button>
+          </div>
+          <div class="row">
+            <span class="hint">Рука стоит у поля</span>
+            <div class="seg sm" id="cal-side"><button data-v="0">снизу</button><button data-v="90">слева</button><button data-v="180">сверху</button><button data-v="270">справа</button></div>
+          </div>
+          <div class="grid">
+            <label class="fld"><span>Центр поля, вперёд</span><input data-k="cu" inputmode="decimal"><em>мм</em></label>
+            <label class="fld"><span>Центр поля, влево</span><input data-k="cv" inputmode="decimal"><em>мм</em></label>
+            <label class="fld"><span>Шаг клетки</span><input data-k="pitch" inputmode="decimal"><em>мм</em></label>
+            <label class="fld"><span>Доворот поля</span><input data-k="turn" inputmode="decimal"><em>°</em></label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Маркер <small>насадка жёсткая — касание подбирайте по 1 мм</small></legend>
+          <div class="grid">
+            <label class="fld"><span>Высота касания</span><input data-k="zDraw" inputmode="decimal"><em>мм</em></label>
+            <label class="fld"><span>Высота проезда</span><input data-k="zTravel" inputmode="decimal"><em>мм</em></label>
+            <label class="fld"><span>Поправка на 100 мм вылета</span><input data-k="zTilt" inputmode="decimal"><em>мм</em></label>
+            <label class="fld"><span>Поворот схвата</span><input data-k="pov" inputmode="decimal"><em>°</em></label>
+            <label class="fld"><span>Размер знака</span><input data-k="size" data-scale="100" inputmode="decimal"><em>% клетки</em></label>
+            <label class="fld"><span>Шаг штриха</span><input data-k="step" inputmode="decimal"><em>мм</em></label>
+          </div>
+          <div class="row">
+            <span class="hint">gripper_state при рисовании</span>
+            <div class="seg sm" id="cal-grip"><button data-v="false">false</button><button data-v="true">true</button></div>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Стоянка <small>куда рука уходит после хода</small></legend>
+          <div class="grid three">
+            <label class="fld"><span>Вылет</span><input data-k="parkX" inputmode="decimal"><em>мм</em></label>
+            <label class="fld"><span>Высота</span><input data-k="parkZ" inputmode="decimal"><em>мм</em></label>
+            <label class="fld"><span>База</span><input data-k="parkAngel" inputmode="decimal"><em>°</em></label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Проверка на руке</legend>
+          <div class="row wrap">
+            <select class="input select" id="t-cell" aria-label="Клетка"></select>
+            <button class="btn sm" data-test="over">Над клеткой</button>
+            <button class="btn sm" data-test="touch">Касание</button>
+            <span class="row tight touch-adj">
+              <button class="btn sm ghost round" data-test="down" title="Ниже на 1 мм" aria-label="Ниже на 1 мм">−1</button>
+              <button class="btn sm ghost round" data-test="up" title="Выше на 1 мм" aria-label="Выше на 1 мм">+1</button>
+            </span>
+          </div>
+          <div class="row wrap">
+            <button class="btn sm ghost" data-test="X">Нарисовать ✕</button>
+            <button class="btn sm ghost" data-test="O">Нарисовать ○</button>
+            <button class="btn sm ghost" data-test="park">На стоянку</button>
+            <button class="link danger right" id="cal-reset">сбросить калибровку</button>
+          </div>
+          <p class="hint" id="test-state">«Касание» опускает маркер в центр клетки. Кнопки −1 / +1 сразу меняют высоту касания и двигают руку.</p>
+        </fieldset>
+
+        <fieldset>
+          <legend>Лампы</legend>
+          <label class="toggle sm">
+            <input type="checkbox" id="lamps-on" role="switch">
+            <span class="toggle-track" aria-hidden="true"></span>
+            <span class="toggle-text">Показывают ход<small>зелёный — ход этого игрока, жёлтый — робот думает, голубой — рука рисует; в конце зелёный победителю, красный проигравшему, жёлтый при ничьей</small></span>
+          </label>
+        </fieldset>
+      </div>
+    </section>
+  </main>
+
+  <dialog class="dialog" id="dlg-new">
+    <form method="dialog">
+      <p class="dialog-title">Новый лист</p>
+      <p class="dialog-text">Положите на стол чистый лист с полем и выровняйте его по меткам. Руки начнут рисовать после первого хода.</p>
+      <div class="dialog-actions">
+        <button class="btn signal" value="ok">Лист на месте</button>
+        <button class="btn ghost" value="cancel">Отмена</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+
+  <script src="assets/kinematics.js"></script>
+  <script src="assets/driver.js"></script>
+  <script src="assets/ttt.js"></script>
+  <script src="assets/game.js"></script>
+</body>
+</html>

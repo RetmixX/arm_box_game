@@ -1,0 +1,1577 @@
+/*
+ * ARM·BOX — пульт манипулятора. Чистый JS, без зависимостей.
+ * Зависит от window.Kin (kinematics.js) и window.Driver (driver.js).
+ */
+(function () {
+  'use strict';
+
+  /* ================================ утилиты ================================ */
+
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const uid = () => Math.random().toString(36).slice(2, 10);
+  const timeStr = (t) => new Date(t).toLocaleTimeString('ru-RU');
+
+  const store = {
+    get(key, def) {
+      try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : def; } catch (_) { return def; }
+    },
+    set(key, val) {
+      try { localStorage.setItem(key, JSON.stringify(val)); } catch (_) { /* приватный режим */ }
+    },
+  };
+
+  function toast(text, kind) {
+    const box = $('#toasts');
+    if ($$('.toast', box).some((t) => t.textContent === text)) return;
+    const el = document.createElement('div');
+    el.className = 'toast' + (kind === 'error' ? ' error' : '');
+    el.textContent = text;
+    box.appendChild(el);
+    while (box.children.length > 3) box.firstChild.remove();
+    setTimeout(() => el.remove(), kind === 'error' ? 5000 : 2800);
+  }
+
+  function download(name, text, type = 'application/json') {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type }));
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  /* =============================== настройки =============================== */
+
+  const DEFAULTS = {
+    host: '', // IP backend; пусто — 127.0.0.1 или адрес, заданный прокси
+    port: '', // порт backend; пусто — 8000
+    transport: 'ws',
+    demo: false,
+    pollMs: 1000,
+    camHost: '', // IP камеры; пусто — 192.168.0.105
+    camPort: '', // порт камеры; пусто — 8080
+    lampHost: '', // IP лампы; пусто — как у контроллера
+    lampPort: '', // порт лампы; пусто — 80
+    lamp: { red: false, yellow: false, green: false, blue: false }, // последнее отправленное состояние
+    step: 10,
+    live: false,
+    gripTrue: 'open', // что означает gripper_state = true
+    theme: window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
+    tab: 'control',
+  };
+  const S = Object.assign({}, DEFAULTS, store.get('armbox.settings', {}));
+  // ?demo в адресе включает демо-режим
+  if (/[?&]demo\b/.test(location.search)) S.demo = true;
+  const saveSettings = () => store.set('armbox.settings', S);
+
+  // миграция со старых настроек (адрес целиком → IP и порт)
+  if (S.apiBase) {
+    try { const u = new URL(S.apiBase); S.host = u.hostname; S.port = u.port || '80'; } catch (_) { /* ignore */ }
+  }
+  delete S.apiBase; delete S.wsUrl;
+
+  /*
+   * Прокси. Если страница открыта через serve.py или nginx из комплекта, запросы идут
+   * на тот же адрес, а прокси пересылает их на backend (обходит отсутствие CORS).
+   *   serve.py — IP и порт backend меняются из пульта (POST /__backend)
+   *   nginx    — backend задан переменной BACKEND_URL
+   *   none     — прямое подключение к http://IP:порт (backend должен разрешать CORS)
+   */
+  let proxy = { kind: 'none' };
+
+  async function detectProxy() {
+    if (!/^https?:$/.test(location.protocol)) return (proxy = { kind: 'none' });
+    try {
+      const r = await fetch('/__backend', { headers: { accept: 'application/json' } });
+      const j = r.ok && /json/.test(r.headers.get('content-type') || '') ? await r.json() : null;
+      if (j && j.proxy === 'serve.py') proxy = { kind: 'serve', host: j.host, port: j.port, lampHost: j.lamp_host, lampPort: j.lamp_port, camHost: j.cam_host, camPort: j.cam_port };
+      else if (j && j.proxy === 'nginx') proxy = { kind: 'nginx', url: j.url, lampUrl: j.lamp_url, camUrl: j.cam_url };
+      else proxy = { kind: 'none' };
+    } catch (_) {
+      proxy = { kind: 'none' };
+    }
+    return proxy;
+  }
+
+  const hostOf = () => (S.host || '').trim() || '127.0.0.1';
+  const portOf = () => +S.port || 8000;
+
+  /** Адрес backend, как его видит пользователь */
+  function backendAddr() {
+    if (proxy.kind === 'serve') return proxy.host + ':' + proxy.port;
+    if (proxy.kind === 'nginx') return String(proxy.url || '').replace(/^https?:\/\//, '');
+    return hostOf() + ':' + portOf();
+  }
+
+  const lampHostOf = () => (S.lampHost || '').trim() || (proxy.kind === 'serve' ? proxy.host : hostOf());
+  const lampPortOf = () => +S.lampPort || 80;
+  function lampAddr() {
+    if (proxy.kind === 'serve') return (proxy.lampHost || proxy.host) + ':' + (proxy.lampPort || 80);
+    if (proxy.kind === 'nginx') return String(proxy.lampUrl || '').replace(/^https?:\/\//, '') || '—';
+    return lampHostOf() + ':' + lampPortOf();
+  }
+
+  function urls() {
+    if (proxy.kind !== 'none') {
+      return { api: '/api/motors', ws: (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws', lamp: '/api/lamp' };
+    }
+    const h = hostOf().includes(':') ? '[' + hostOf() + ']' : hostOf();
+    return {
+      api: 'http://' + h + ':' + portOf() + '/api/motors',
+      ws: 'ws://' + h + ':' + portOf() + '/ws',
+      lamp: 'http://' + lampHostOf() + (lampPortOf() === 80 ? '' : ':' + lampPortOf()) + '/api/lamp',
+    };
+  }
+
+  /** Переключить прокси serve.py на другой backend */
+  async function pushBackend(host, port, lamp) {
+    const body = { host, port };
+    if (lamp) { body.lamp_host = lamp.host || ''; body.lamp_port = lamp.port || 80; }
+    const cp = camPref();
+    if (cp) { body.cam_host = cp.host; body.cam_port = cp.port; }
+    const r = await fetch('/__backend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.detail || 'HTTP ' + r.status);
+    proxy = { kind: 'serve', host: j.host, port: j.port, lampHost: j.lamp_host, lampPort: j.lamp_port, camHost: j.cam_host, camPort: j.cam_port };
+  }
+  // адрес камеры из настроек браузера; undefined — оставить тот, что задан в serve.py (--camera)
+  const camPref = () => (S.camHost ? { host: S.camHost.trim(), port: +S.camPort || 8080 } : undefined);
+  // адрес лампы из настроек браузера; undefined — оставить тот, что задан в serve.py (--lamp)
+  const lampPref = () => (S.lampHost || S.lampPort ? { host: (S.lampHost || '').trim(), port: +S.lampPort || 80 } : undefined);
+
+  const MOTORS = [
+    { id: 1, name: 'База', ticks: 4096, deg: 360 },
+    { id: 2, name: 'Плечо', ticks: 4096, deg: 360 },
+    { id: 3, name: 'Локоть', ticks: 4096, deg: 360 },
+    { id: 4, name: 'Кисть', ticks: 4096, deg: 360 },
+    { id: 5, name: 'Поворот схвата', ticks: 1024, deg: 300 },
+    { id: 6, name: 'Схват', ticks: 1024, deg: 300 },
+  ];
+  // Допустимые диапазоны параметров команды: рамки заказчика (x, z до 300 мм),
+  // суженные до рабочей зоны Kin.WORK (docs/ik.md): x ≥ 120 — упор в базу, угол 30…330 — упор и кабели
+  const within = (a, b) => [Math.max(a[0], b[0]), Math.min(a[1], b[1])];
+  const LIMITS = {
+    x: within([10, 300], Kin.WORK.x),
+    z: within([10, 300], Kin.WORK.z),
+    angel: within([1, 360], Kin.WORK.angle),
+    pov_gripper: [1, 300],
+  };
+  const LIMIT_NAMES = { x: 'Вылет x', z: 'Высота z', angel: 'Угол базы', pov_gripper: 'Поворот схвата' };
+  const UNITS = { x: ' мм', z: ' мм', angel: '°', pov_gripper: '°' };
+
+  /* ================================ состояние ================================ */
+
+  const HOME = { x: 200, z: 200, angel: 180, pov_gripper: 150, open: false };
+
+  const st = {
+    driver: null,
+    link: 'unknown', // unknown | online | offline
+    ws: 'idle',
+    lastError: '',
+    target: Object.assign({}, HOME),
+    committed: null,
+    busy: false,
+    queued: false,
+    programRunning: false,
+    speed: null, // %, null — неизвестно
+    speedSupported: null, // false — в backend нет /api/motors/speed
+    pos: {},
+    temp: {},
+    load: {},
+    updatedAt: 0,
+    history: [],
+    log: [],
+  };
+
+  function addLog(level, text) {
+    st.log.unshift({ t: Date.now(), level, text });
+    st.log.length = Math.min(st.log.length, 300);
+    renderLog();
+  }
+
+  const toCommand = (t) => ({
+    x: t.x,
+    z: t.z,
+    angel: t.angel,
+    pov_gripper: t.pov_gripper,
+    gripper_state: S.gripTrue === 'open' ? !!t.open : !t.open,
+  });
+
+  function validate(t) {
+    for (const k of Object.keys(LIMITS)) {
+      const [lo, hi] = LIMITS[k];
+      if (!(t[k] >= lo && t[k] <= hi)) return LIMIT_NAMES[k] + ': допустимо ' + lo + '–' + hi + UNITS[k];
+    }
+    if (!Kin.inWorkZone(t.x, t.z, t.angel)) return 'Точка x ' + t.x + ', z ' + t.z + ' вне рабочей зоны — на такой высоте рука не дотянется';
+    return null;
+  }
+
+  const sameTarget = (a, b) => !!a && !!b && a.x === b.x && a.z === b.z && a.angel === b.angel && a.pov_gripper === b.pov_gripper && !!a.open === !!b.open;
+
+  function setTarget(patch, send) {
+    if (st.programRunning) { toast('Идёт программа — остановите её для ручного управления'); return; }
+    Object.assign(st.target, patch);
+    renderControl();
+    if (send === undefined ? S.live : send) execute();
+  }
+
+  /** Отправить цель. explicit — точка программы (без коалесценции). */
+  async function execute(explicit) {
+    if (!st.driver) return false;
+    if (st.programRunning && !explicit) {
+      toast('Идёт программа — остановите её для ручного управления');
+      return false;
+    }
+    if (st.busy && !explicit) {
+      st.queued = true; // пока рука едет, запоминаем только последнюю цель
+      return true;
+    }
+    const target = Object.assign({}, explicit || st.target);
+    const err = validate(target);
+    if (err) { toast(err); addLog('warn', err); return false; }
+
+    const cmd = toCommand(target);
+    st.busy = true;
+    st.queued = false;
+    renderStatus();
+    const t0 = performance.now();
+    try {
+      await st.driver.move(cmd, S.transport);
+      st.committed = target;
+      st.lastError = '';
+      addLog('ok', 'Движение ' + Math.round(performance.now() - t0) + ' мс · x=' + cmd.x + ' z=' + cmd.z + ' угол=' + cmd.angel + ' схват=' + cmd.gripper_state);
+      return true;
+    } catch (e) {
+      st.lastError = e.message;
+      addLog('error', 'Ошибка движения: ' + e.message);
+      toast(e.message, 'error');
+      return false;
+    } finally {
+      st.busy = false;
+      renderStatus();
+      renderControl();
+      if (st.queued && !explicit) { st.queued = false; execute(); }
+    }
+  }
+
+  /* ============================ драйвер и опрос ============================ */
+
+  let gen = 0;
+  let pollTimer = null;
+
+  function startDriver() {
+    stopDriver();
+    const u = urls();
+    const d = S.demo ? new Driver.DemoDriver() : new Driver.RealDriver(u.api, u.ws, u.lamp);
+    const my = ++gen;
+    Object.assign(st, { driver: d, link: 'unknown', ws: 'idle', pos: {}, temp: {}, load: {}, history: [], busy: false, queued: false, speed: null, speedSupported: null });
+    addLog('info', S.demo ? 'Демо-режим: симуляция манипулятора' : 'Подключение к ' + backendAddr() + (proxy.kind !== 'none' ? ' (через прокси ' + (proxy.kind === 'serve' ? 'serve.py' : 'nginx') + ')' : ' (напрямую)'));
+    renderSpeed();
+    lampError = '';
+    renderLamp();
+
+    let prev = 'idle';
+    d.onWs((s) => {
+      if (my !== gen) return;
+      st.ws = s;
+      if (!S.demo && s === 'open' && prev !== 'open') addLog('ok', 'WebSocket подключён');
+      if (!S.demo && s === 'closed' && prev === 'open') addLog('warn', 'WebSocket отключён, переподключение…');
+      prev = s;
+      renderStatus();
+    });
+    if (S.transport === 'ws' || S.demo) d.connect();
+
+    const poll = async () => {
+      if (my !== gen) return;
+      try {
+        // шина полудуплексная — строго последовательно
+        const pos = await d.getPos();
+        const temp = await d.getTemp();
+        const load = await d.getLoad();
+        if (my !== gen) return;
+        const first = st.link !== 'online';
+        Object.assign(st, { pos, temp, load, link: 'online', updatedAt: Date.now() });
+        st.history.push({ temp, load });
+        if (st.history.length > 90) st.history.shift();
+        if (first) {
+          addLog('ok', 'Связь с контроллером установлена');
+          loadSpeed(d, my);
+          if (!st.committed) seedTarget(pos);
+        }
+      } catch (e) {
+        if (my !== gen) return;
+        if (st.link !== 'offline') addLog('error', 'Телеметрия недоступна: ' + e.message);
+        st.link = 'offline';
+        st.lastError = e.message;
+      }
+      renderStatus();
+      renderTelemetry();
+      const delay = S.demo ? 200 : S.pollMs * (st.link === 'offline' ? 3 : 1);
+      pollTimer = setTimeout(poll, delay);
+    };
+    poll();
+    renderStatus();
+  }
+
+  function stopDriver() {
+    gen++;
+    clearTimeout(pollTimer);
+    if (st.driver) st.driver.dispose();
+    st.driver = null;
+  }
+
+  /** При первом подключении синхронизируем цель с фактическим положением руки */
+  function seedTarget(pos) {
+    if (![1, 2, 3].every((i) => Number.isFinite(pos[i]))) return;
+    const p = Kin.poseFromTicks(pos);
+    const j = Kin.joints(p);
+    const patch = { angel: clamp(Math.round(p.angle), ...LIMITS.angel), pov_gripper: clamp(Math.round(p.pov), ...LIMITS.pov_gripper) };
+    const x = Math.round(j.t.x), z = Math.round(j.t.z);
+    if (Kin.inWorkZone(x, z) && x <= LIMITS.x[1] && z >= LIMITS.z[0] && z <= LIMITS.z[1]) { patch.x = x; patch.z = z; }
+    if (Number.isFinite(pos[6])) {
+      const isTrue = Math.abs(pos[6] - 370) < Math.abs(pos[6] - 710);
+      patch.open = S.gripTrue === 'open' ? isTrue : !isTrue;
+    }
+    Object.assign(st.target, patch);
+    renderControl();
+  }
+
+  /* ================================ статус ================================ */
+
+  function setSt(el, cls, text) {
+    el.className = 'st ' + cls;
+    el.lastChild.textContent = text;
+  }
+
+  function renderStatus() {
+    $('#st-busy').hidden = !st.busy;
+    const wsEl = $('#st-ws');
+    wsEl.hidden = S.demo || S.transport !== 'ws';
+    setSt(wsEl, st.ws === 'open' ? 'ok' : st.ws === 'connecting' ? 'warn' : 'err', 'ws');
+    $('#st-addr').textContent = S.demo ? '' : backendAddr();
+    const link = $('#st-link');
+    if (S.demo) setSt(link, 'demo', 'демо');
+    else if (st.link === 'online') setSt(link, 'ok', 'на связи');
+    else if (st.link === 'offline') setSt(link, 'err', 'нет связи');
+    else setSt(link, 'warn', 'подключение');
+
+    $('#banner').hidden = !(st.link === 'offline' && !S.demo);
+    $('#banner-err').title = backendAddr();
+    $('#banner-err').textContent = st.lastError ? '· ' + st.lastError : '';
+    $('#btn-exec').disabled = st.busy || !st.driver || !!validate(st.target);
+    $('#btn-exec').firstChild.textContent = st.busy ? 'Выполняется… ' : 'Выполнить ';
+  }
+
+  /* =============================== управление =============================== */
+
+  const axes = $$('.axis').map((root) => {
+    const key = root.dataset.key;
+    const num = $('.num input', root);
+    const range = $('input[type=range]', root);
+    const [min, max] = LIMITS[key];
+    range.min = min; range.max = max;
+
+    const paintRange = () => range.style.setProperty('--p', ((range.value - range.min) / (range.max - range.min)) * 100 + '%');
+    const commitNum = () => {
+      const v = Number(String(num.value).replace(',', '.'));
+      if (!Number.isFinite(v)) { num.value = st.target[key]; return; }
+      const c = clamp(Math.round(v), min, max);
+      if (c !== st.target[key]) setTarget({ [key]: c });
+      else num.value = c;
+    };
+    num.addEventListener('focus', () => num.select());
+    num.addEventListener('blur', commitNum);
+    num.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') num.blur();
+      if (e.key === 'Escape') { num.value = st.target[key]; num.blur(); }
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        e.stopPropagation();
+        const d = (e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 10 : 1);
+        setTarget({ [key]: clamp(st.target[key] + d, min, max) });
+      }
+    });
+    range.addEventListener('input', () => setTarget({ [key]: Number(range.value) }, false));
+    range.addEventListener('change', () => setTarget({ [key]: Number(range.value) }));
+
+    return {
+      update() {
+        if (document.activeElement !== num) num.value = st.target[key];
+        if (document.activeElement !== range) range.value = st.target[key];
+        paintRange();
+      },
+    };
+  });
+
+  function renderControl() {
+    axes.forEach((a) => a.update());
+    const err = validate(st.target);
+    const errEl = $('#goal-error');
+    errEl.hidden = !err;
+    errEl.textContent = err || '';
+    $('#goal-state').textContent = st.busy ? 'движение…' : sameTarget(st.target, st.committed) ? 'достигнута' : 'не отправлена';
+    $('#grip').checked = !!st.target.open;
+    $('#grip-title').textContent = st.target.open ? 'Схват открыт' : 'Схват закрыт';
+    $('#grip-raw').textContent = String(toCommand(st.target).gripper_state);
+    $('#live').checked = S.live;
+    $$('#steps button').forEach((b) => b.classList.toggle('on', +b.dataset.step === S.step));
+    renderStatus();
+    dirty = true;
+  }
+
+  $('#grip').addEventListener('change', (e) => setTarget({ open: e.target.checked }, true));
+  $('#live').addEventListener('change', (e) => { S.live = e.target.checked; saveSettings(); });
+  $('#btn-exec').addEventListener('click', () => execute());
+  $('#btn-home').addEventListener('click', () => setTarget(Object.assign({}, HOME), true));
+  $('#steps').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    S.step = +b.dataset.step;
+    saveSettings();
+    renderControl();
+  });
+
+  const angStep = () => ({ 1: 1, 5: 2, 10: 5, 25: 15 })[S.step] || 5;
+
+  /** Шаг ручного перемещения: сразу отправляет команду */
+  function jog(dir, mult = 1) {
+    if (st.programRunning) { toast('Идёт программа — остановите её для ручного управления'); return false; }
+    const m = S.step * mult;
+    const a = angStep() * mult;
+    const t = st.target;
+    const patch = {
+      'x+': { x: t.x + m }, 'x-': { x: t.x - m },
+      'z+': { z: t.z + m }, 'z-': { z: t.z - m },
+      'a+': { angel: t.angel + a }, 'a-': { angel: t.angel - a },
+      'p+': { pov_gripper: t.pov_gripper + a }, 'p-': { pov_gripper: t.pov_gripper - a },
+    }[dir];
+    const err = validate(Object.assign({}, t, patch));
+    if (err) { toast(err); return false; }
+    setTarget(patch, true);
+    return true;
+  }
+
+  // Кнопки с автоповтором при удержании
+  $$('[data-jog]').forEach((btn) => {
+    let timer = null;
+    const stop = () => { clearTimeout(timer); timer = null; btn.classList.remove('held'); };
+    btn.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      btn.classList.add('held');
+      if (!jog(btn.dataset.jog)) return stop();
+      const loop = (d) => { timer = setTimeout(() => (jog(btn.dataset.jog) ? loop(110) : stop()), d); };
+      loop(380);
+    });
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach((ev) => btn.addEventListener(ev, stop));
+    btn.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); jog(btn.dataset.jog); } });
+  });
+
+  /* ------------------------------ джойстики ------------------------------ */
+
+  /** Цель, сдвинутая джойстиком; оси, уводящие за границы или из рабочей зоны, отбрасываются */
+  function joyTarget(t, a, maxMm, maxDeg) {
+    const lim = (k, v) => clamp(Math.round(v), LIMITS[k][0], LIMITS[k][1]);
+    const next = {
+      x: lim('x', t.x + a.lx * maxMm),
+      z: lim('z', t.z + a.ly * maxMm),
+      angel: lim('angel', t.angel - a.rx * maxDeg), // вправо — по часовой (угол меньше)
+      pov_gripper: lim('pov_gripper', t.pov_gripper + a.ry * maxDeg),
+    };
+    if (!Kin.inWorkZone(next.x, next.z, next.angel)) {
+      if (Kin.inWorkZone(next.x, t.z, next.angel)) next.z = t.z;
+      else if (Kin.inWorkZone(t.x, next.z, next.angel)) next.x = t.x;
+      else { next.x = t.x; next.z = t.z; }
+    }
+    const changed = ['x', 'z', 'angel', 'pov_gripper'].some((k) => next[k] !== t[k]);
+    return changed ? next : null;
+  }
+
+  const joyL = Joy.stick($('#joy-left'), { labels: { up: 'выше', down: 'ниже', left: 'ближе', right: 'дальше' }, ariaLabel: 'Вылет и высота' });
+  const joyR = Joy.stick($('#joy-right'), { labels: { up: 'схват +', down: 'схват −', left: 'влево', right: 'вправо' }, ariaLabel: 'Поворот базы и схвата' });
+  const padEdges = Joy.buttonEdges();
+
+  Joy.onGamepad((name) => {
+    $('#pad-state').textContent = name ? 'геймпад: ' + name.replace(/\s*\(.*$/, '').slice(0, 28) : 'геймпад не подключён';
+  });
+
+  Joy.loop({
+    interval: 70,
+    read() {
+      const pad = Joy.gamepad();
+      if (pad) {
+        const e = padEdges(pad.buttons);
+        if (e[0]) setTarget({ open: !st.target.open }, true); // A — схват
+        if (e[1]) setTarget(Object.assign({}, HOME), true);   // B — домой
+      }
+      const pick = (a, b) => (Math.abs(a) >= Math.abs(b) ? a : b);
+      return {
+        lx: pick(joyL.value.x, pad ? pad.left.x : 0),
+        ly: pick(joyL.value.y, pad ? pad.left.y : 0),
+        rx: pick(joyR.value.x, pad ? pad.right.x : 0),
+        ry: pick(joyR.value.y, pad ? pad.right.y : 0),
+      };
+    },
+    isBusy: () => st.busy || st.programRunning || !st.driver,
+    apply(a) {
+      // максимальный шаг на одну команду растёт с выбранным «шагом кнопок»
+      const next = joyTarget(st.target, a, Math.max(4, S.step * 1.5), Math.max(3, angStep() * 1.5));
+      if (next) setTarget(next, true);
+    },
+  });
+
+  // Горячие клавиши
+  window.addEventListener('keydown', (e) => {
+    const tag = (e.target && e.target.tagName) || '';
+    if (/INPUT|TEXTAREA|SELECT/.test(tag) || e.metaKey || e.ctrlKey || e.altKey) return;
+    const k = e.shiftKey ? 5 : 1;
+    const map = {
+      ArrowLeft: () => jog('x-', k), ArrowRight: () => jog('x+', k),
+      ArrowUp: () => jog('z+', k), ArrowDown: () => jog('z-', k),
+      KeyQ: () => jog('a-', k), KeyE: () => jog('a+', k),
+      KeyA: () => jog('p-', k), KeyD: () => jog('p+', k),
+      KeyG: () => setTarget({ open: !st.target.open }, true),
+      KeyH: () => setTarget(Object.assign({}, HOME), true),
+      Enter: () => execute(),
+    };
+    const fn = map[e.code] || map[e.key];
+    if (fn) { e.preventDefault(); fn(); }
+  });
+
+  /* ================================== лампа ================================== */
+
+  const LAMP_NAMES = { red: 'красный', yellow: 'жёлтый', green: 'зелёный', blue: 'голубой' };
+  let lampBusy = false;
+  let lampError = '';
+
+  async function sendLamp(next) {
+    if (!st.driver || lampBusy) return;
+    lampBusy = true;
+    lampError = '';
+    renderLamp(next);
+    try {
+      await st.driver.setLamp(next);
+      S.lamp = Driver.lampBody(next);
+      saveSettings();
+      const on = Object.keys(S.lamp).filter((k) => S.lamp[k]).map((k) => LAMP_NAMES[k]);
+      addLog('ok', 'Лампа: ' + (on.length ? on.join(', ') : 'выключена'));
+    } catch (e) {
+      lampError = e.message;
+      addLog('error', 'Лампа (' + lampAddr() + '): ' + e.message);
+      toast('Лампа не ответила: ' + e.message, 'error');
+    } finally {
+      lampBusy = false;
+      renderLamp();
+    }
+  }
+
+  function renderLamp(preview) {
+    const state = preview || S.lamp;
+    $$('#lamp-btns button').forEach((b) => {
+      b.setAttribute('aria-pressed', String(!!state[b.dataset.lamp]));
+      b.disabled = lampBusy || !st.driver;
+    });
+    $$('#ro-lamp i').forEach((i) => i.classList.toggle('on', !!S.lamp[i.dataset.c]));
+    const el = $('#lamp-state');
+    el.textContent = lampBusy ? 'отправка…' : lampError ? 'ошибка' : S.demo ? 'демо' : lampAddr();
+    el.style.color = lampError ? 'var(--err)' : '';
+    el.title = lampError;
+  }
+
+  $('#lamp-btns').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-lamp]');
+    if (!b) return;
+    const next = Object.assign({}, S.lamp, { [b.dataset.lamp]: !S.lamp[b.dataset.lamp] });
+    sendLamp(next);
+  });
+  $('#lamp-off').addEventListener('click', () => sendLamp({ red: false, yellow: false, green: false, blue: false }));
+
+  /* ================================ скорость ================================ */
+
+  const isNotFound = (e) => /HTTP 404|нет backend/.test(e.message);
+
+  async function loadSpeed(d, my) {
+    try {
+      const v = await d.getSpeed();
+      if (my !== gen) return;
+      st.speed = Number.isFinite(v) ? v : null;
+      st.speedSupported = true;
+    } catch (e) {
+      if (my !== gen) return;
+      st.speedSupported = isNotFound(e) ? false : null;
+      if (st.speedSupported === false) addLog('warn', 'В backend нет метода /api/motors/speed — примените патч из backend-patch');
+    }
+    renderSpeed();
+  }
+
+  let speedSending = false;
+  async function applySpeed(v) {
+    v = clamp(Math.round(v), 1, 100);
+    if (!st.driver) return;
+    if (st.speedSupported === false) {
+      toast('Backend не поддерживает смену скорости — примените патч из папки backend-patch', 'error');
+      renderSpeed();
+      return;
+    }
+    speedSending = true;
+    renderSpeed(v);
+    try {
+      await st.driver.setSpeed(v);
+      st.speed = v;
+      st.speedSupported = true;
+      addLog('ok', 'Скорость: ' + v + ' %');
+    } catch (e) {
+      if (isNotFound(e)) {
+        st.speedSupported = false;
+        toast('Backend не поддерживает смену скорости — примените патч из папки backend-patch', 'error');
+      } else {
+        toast('Скорость не изменена: ' + e.message, 'error');
+      }
+      addLog('error', 'Скорость не изменена: ' + e.message);
+    } finally {
+      speedSending = false;
+      renderSpeed();
+    }
+  }
+
+  function renderSpeed(preview) {
+    const range = $('#speed');
+    const v = preview !== undefined ? preview : st.speed;
+    range.value = v == null ? 30 : v;
+    range.style.setProperty('--p', ((range.value - 1) / 99) * 100 + '%');
+    $('#speed-val').textContent = v == null ? '—' : v;
+    $$('#speed-presets button').forEach((b) => b.classList.toggle('on', +b.dataset.v === v));
+    const stEl = $('#speed-state');
+    stEl.className = '';
+    if (speedSending) stEl.textContent = 'применяется…';
+    else if (st.speedSupported === false) { stEl.textContent = 'нет метода в backend'; stEl.className = 'warn'; }
+    else if (st.speed == null) stEl.textContent = st.link === 'online' ? 'неизвестна' : '';
+    else stEl.textContent = '';
+    range.disabled = !st.driver;
+  }
+
+  $('#speed').addEventListener('input', (e) => renderSpeed(+e.target.value));
+  $('#speed').addEventListener('change', (e) => applySpeed(+e.target.value));
+  $('#speed-presets').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (b) applySpeed(+b.dataset.v);
+  });
+
+  /* =============================== визуализация =============================== */
+
+  const cvSide = $('#cv-side');
+  const cvTop = $('#cv-top');
+  let colors = {};
+  let dirty = true;
+  let zoneCache = null;
+  const shown = { angle: 180, shoulder: 0, elbow: 0, pov: 150, grip: 0 };
+  let shownInit = false;
+  const trail = [];
+
+  function readColors() {
+    const cs = getComputedStyle(document.documentElement);
+    const v = (n) => cs.getPropertyValue(n).trim();
+    colors = { bg: v('--bg'), soft: v('--bg-soft'), line: v('--line'), strong: v('--line-strong'), text: v('--text'), muted: v('--muted'), goal: v('--goal'), zone: v('--zone'), warn: v('--warn'), err: v('--err'), mono: v('--mono'), arm: v('--arm') };
+    zoneCache = null;
+    dirty = true;
+  }
+
+  function fitCanvas(cv) {
+    const r = cv.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(1, Math.round(r.width * dpr));
+    const h = Math.max(1, Math.round(r.height * dpr));
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; zoneCache = null; dirty = true; }
+    return { w: r.width, h: r.height, dpr };
+  }
+
+  // Мир вида сбоку, мм
+  const WX0 = -80, WX1 = 370, WZ0 = -20, WZ1 = 420;
+
+  function sideMap(w, h) {
+    const pad = 28;
+    const s = Math.min((w - pad * 2) / (WX1 - WX0), (h - pad * 2) / (WZ1 - WZ0));
+    const ox = (w - (WX1 - WX0) * s) / 2 - WX0 * s;
+    const oz = (h + (WZ1 - WZ0) * s) / 2 + WZ0 * s;
+    return { s, X: (x) => ox + x * s, Z: (z) => oz - z * s, x: (px) => (px - ox) / s, z: (py) => (oz - py) / s };
+  }
+
+  function buildZone(w, h, dpr, m) {
+    const c = document.createElement('canvas');
+    c.width = Math.round(w * dpr);
+    c.height = Math.round(h * dpr);
+    const g = c.getContext('2d');
+    g.scale(dpr, dpr);
+    g.fillStyle = colors.zone;
+    const step = 4;
+    const cell = step * m.s + 0.6;
+    for (let x = LIMITS.x[0]; x <= LIMITS.x[1]; x += step) {
+      for (let z = LIMITS.z[0]; z <= LIMITS.z[1]; z += step) {
+        if (Kin.inWorkZone(x, z)) g.fillRect(m.X(x) - cell / 2, m.Z(z) - cell / 2, cell, cell);
+      }
+    }
+    return c;
+  }
+
+  function actualPose() {
+    if ([1, 2, 3].every((i) => Number.isFinite(st.pos[i]))) {
+      const p = Kin.poseFromTicks(st.pos);
+      const openTick = S.gripTrue === 'open' ? 370 : 710;
+      const closeTick = S.gripTrue === 'open' ? 710 : 370;
+      p.grip = clamp((closeTick - p.gripTick) / (closeTick - openTick), 0, 1);
+      return p;
+    }
+    const t = st.committed || HOME;
+    const p = Kin.poseFromTarget(t.x, t.z, t.angel, t.pov_gripper);
+    p.grip = t.open ? 1 : 0;
+    return p;
+  }
+
+  function stepAnimation(dt) {
+    const a = actualPose();
+    if (!shownInit) { Object.assign(shown, a); shownInit = true; return true; }
+    const k = 1 - Math.exp(-9 * dt);
+    let moving = false;
+    for (const key of ['angle', 'shoulder', 'elbow', 'pov', 'grip']) {
+      const d = a[key] - shown[key];
+      if (Math.abs(d) > 1e-4) { shown[key] += d * k; moving = true; }
+    }
+    return moving;
+  }
+
+  function line(g, pts, width, color, dash) {
+    g.beginPath();
+    pts.forEach((p, i) => (i ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1])));
+    g.lineWidth = width;
+    g.strokeStyle = color;
+    g.setLineDash(dash || []);
+    g.stroke();
+    g.setLineDash([]);
+  }
+
+  function dot(g, x, y, r, fill, stroke, lw = 1.5) {
+    g.beginPath();
+    g.arc(x, y, r, 0, Math.PI * 2);
+    if (fill) { g.fillStyle = fill; g.fill(); }
+    if (stroke) { g.lineWidth = lw; g.strokeStyle = stroke; g.stroke(); }
+  }
+
+  function drawSide() {
+    if (cvSide.offsetParent === null) return; // схема скрыта (показывается камера) — размер не трогаем
+    const { w, h, dpr } = fitCanvas(cvSide);
+    const g = cvSide.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, w, h);
+    const m = sideMap(w, h);
+    g.font = '10px ' + colors.mono;
+    g.textBaseline = 'alphabetic';
+
+    // сетка
+    g.lineWidth = 1;
+    for (let x = -50; x <= WX1; x += 50) {
+      g.strokeStyle = x % 100 === 0 ? colors.line : colors.soft;
+      g.beginPath(); g.moveTo(Math.round(m.X(x)) + 0.5, m.Z(WZ1)); g.lineTo(Math.round(m.X(x)) + 0.5, m.Z(0)); g.stroke();
+      if (x % 100 === 0 && x >= 0) { g.fillStyle = colors.muted; g.fillText(String(x), m.X(x) + 3, m.Z(0) + 14); }
+    }
+    for (let z = 50; z <= WZ1; z += 50) {
+      g.strokeStyle = z % 100 === 0 ? colors.line : colors.soft;
+      g.beginPath(); g.moveTo(m.X(WX0), Math.round(m.Z(z)) + 0.5); g.lineTo(m.X(WX1), Math.round(m.Z(z)) + 0.5); g.stroke();
+      if (z % 100 === 0) { g.fillStyle = colors.muted; g.fillText(String(z), m.X(WX0) + 2, m.Z(z) - 4); }
+    }
+
+    // рабочая зона
+    if (!zoneCache) zoneCache = buildZone(w, h, dpr, m);
+    g.save(); g.setTransform(1, 0, 0, 1, 0, 0); g.drawImage(zoneCache, 0, 0); g.restore();
+
+    // пол
+    line(g, [[m.X(WX0), m.Z(0)], [m.X(WX1), m.Z(0)]], 1, colors.strong);
+    // границы допустимых x и z
+    g.setLineDash([3, 4]);
+    g.strokeStyle = colors.strong;
+    g.lineWidth = 1;
+    g.strokeRect(m.X(LIMITS.x[0]), m.Z(LIMITS.z[1]), (LIMITS.x[1] - LIMITS.x[0]) * m.s, (LIMITS.z[1] - LIMITS.z[0]) * m.s);
+    g.setLineDash([]);
+
+    // основание
+    const B = Kin.GEOM.BASE_HEIGHT;
+    const bw = 34 * m.s;
+    g.fillStyle = colors.text;
+    g.beginPath();
+    if (g.roundRect) g.roundRect(m.X(0) - bw, m.Z(B), bw * 2, B * m.s, [8, 8, 0, 0]);
+    else g.rect(m.X(0) - bw, m.Z(B), bw * 2, B * m.s);
+    g.fill();
+    g.fillRect(m.X(0) - bw * 1.6, m.Z(0) - 6, bw * 3.2, 6);
+
+    // след
+    if (trail.length > 1) { g.globalAlpha = 0.4; line(g, trail.map((p) => [m.X(p.x), m.Z(p.z)]), 1.5, colors.arm); g.globalAlpha = 1; }
+
+    // цель (призрак)
+    const tp = Kin.poseFromTarget(st.target.x, st.target.z, st.target.angel, st.target.pov_gripper);
+    if (tp) {
+      const j = Kin.joints(tp);
+      line(g, [j.s, j.e, j.w, j.t].map((p) => [m.X(p.x), m.Z(p.z)]), 1.5, colors.muted, [6, 5]);
+    }
+
+    // фактическая поза
+    const j = Kin.joints(shown);
+    const P = (p) => [m.X(p.x), m.Z(p.z)];
+    const thick = Math.max(8, 22 * m.s);
+    g.lineCap = 'round';
+    line(g, [P(j.s), P(j.e), P(j.w)], thick, colors.arm);
+    line(g, [P(j.w), P({ x: j.w.x, z: j.t.z + 45 })], thick * 0.6, colors.arm);
+    g.lineCap = 'butt';
+    // пальцы схвата
+    const open = 8 + shown.grip * 22;
+    const fz0 = j.t.z + 45, fz1 = j.t.z;
+    const jaw = Math.max(3, 6 * m.s);
+    [-1, 1].forEach((sgn) => line(g, [[m.X(j.w.x + sgn * open), m.Z(fz0)], [m.X(j.w.x + sgn * open), m.Z(fz1)]], jaw, colors.text));
+    line(g, [[m.X(j.w.x - open), m.Z(fz0)], [m.X(j.w.x + open), m.Z(fz0)]], jaw, colors.text);
+    [j.s, j.e, j.w].forEach((p) => { dot(g, m.X(p.x), m.Z(p.z), thick * 0.62, colors.text); dot(g, m.X(p.x), m.Z(p.z), thick * 0.2, colors.soft); });
+
+    // точка цели
+    const tx = m.X(st.target.x), tz = m.Z(st.target.z);
+    const ok = !!tp && !validate(st.target);
+    const c = ok ? colors.arm : colors.err;
+    dot(g, tx, tz, 8, null, c, 2.5);
+    g.fillStyle = c;
+    g.font = '11px ' + colors.mono;
+    const label = st.target.x + ', ' + st.target.z;
+    g.fillText(label, Math.min(tx + 10, w - g.measureText(label).width - 4), tz - 10);
+  }
+
+  function drawTop() {
+    const { w, h, dpr } = fitCanvas(cvTop);
+    const g = cvTop.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, w, h);
+    const cx = w / 2, cy = h / 2;
+    const R = Math.min(w, h) / 2 - 16;
+    const k = R / 360;
+    const P = (x, ang) => { const a = ((ang - 90) * Math.PI) / 180; return [cx + Math.cos(a) * x * k, cy - Math.sin(a) * x * k]; };
+
+    g.lineWidth = 1;
+    [120, 240, 360].forEach((r) => dot(g, cx, cy, r * k, null, r === 360 ? colors.strong : colors.line, 1));
+    // рабочая зона: кольцо x от упора в базу до рамки, сектор угла 30…330 (вокруг 0° — упор и кабели)
+    g.fillStyle = colors.zone;
+    g.beginPath();
+    for (let a = LIMITS.angel[0]; a <= LIMITS.angel[1]; a += 2) g.lineTo(...P(LIMITS.x[1], a));
+    for (let a = LIMITS.angel[1]; a >= LIMITS.angel[0]; a -= 2) g.lineTo(...P(LIMITS.x[0], a));
+    g.closePath();
+    g.fill();
+    g.font = '10px ' + colors.mono;
+    g.fillStyle = colors.muted;
+    g.textAlign = 'center';
+    for (let a = 0; a < 360; a += 30) {
+      const [x1, y1] = P(345, a), [x2, y2] = P(360, a);
+      line(g, [[x1, y1], [x2, y2]], 1, colors.strong);
+    }
+    [[180, '180'], [90, '90'], [270, '270'], [0, '0']].forEach(([a, t]) => { const [x, y] = P(360 + 0, a); g.fillText(t, x + (a === 90 ? 12 : a === 270 ? -12 : 0), y + (a === 180 ? -4 : a === 0 ? 12 : 3)); });
+    g.textAlign = 'start';
+
+    // цель
+    const [gx, gy] = P(st.target.x, st.target.angel);
+    line(g, [[cx, cy], [gx, gy]], 1.5, colors.muted, [5, 4]);
+    dot(g, gx, gy, 5, null, colors.arm, 2);
+
+    // факт
+    const j = Kin.joints(shown);
+    const [ax, ay] = P(j.t.x, shown.angle);
+    line(g, [[cx, cy], [ax, ay]], 6, colors.arm);
+    // поворот схвата — короткая перемычка на конце
+    const roll = ((shown.angle - 90 + (shown.pov - 150)) * Math.PI) / 180;
+    const rx = Math.cos(roll + Math.PI / 2) * 9, ry = -Math.sin(roll + Math.PI / 2) * 9;
+    line(g, [[ax - rx, ay - ry], [ax + rx, ay + ry]], 3, colors.text);
+    dot(g, cx, cy, 9, colors.text);
+  }
+
+  function renderReadout() {
+    const j = Kin.joints(shown);
+    const has = [1, 2, 3].every((i) => Number.isFinite(st.pos[i]));
+    $('#ro-x').textContent = has ? Math.round(j.t.x) : '—';
+    $('#ro-z').textContent = has ? Math.round(j.t.z) : '—';
+    $('#ro-a').textContent = has ? Math.round(shown.angle) + '°' : '—';
+    $('#ro-g').textContent = Number.isFinite(st.pos[6]) ? (shown.grip > 0.5 ? 'откр.' : 'закр.') : '—';
+  }
+
+  let lastT = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.1, (now - lastT) / 1000);
+    lastT = now;
+    const moving = stepAnimation(dt);
+    if (moving) {
+      const t = Kin.joints(shown).t;
+      const last = trail[trail.length - 1];
+      if (!last || Math.hypot(last.x - t.x, last.z - t.z) > 2) { trail.push({ x: t.x, z: t.z }); if (trail.length > 300) trail.shift(); }
+    }
+    if (moving || dirty) {
+      drawSide();
+      drawTop();
+      renderReadout();
+      dirty = false;
+    }
+    requestAnimationFrame(frame);
+  }
+
+  // Клик / перетаскивание по схемам
+  function bindPointer(cv, pick) {
+    let drag = false;
+    cv.addEventListener('pointerdown', (e) => { drag = true; cv.setPointerCapture(e.pointerId); pick(e, false); });
+    cv.addEventListener('pointermove', (e) => drag && pick(e, false));
+    cv.addEventListener('pointerup', (e) => { if (drag) { drag = false; pick(e, true); } });
+    cv.addEventListener('pointercancel', () => { drag = false; });
+  }
+
+  bindPointer(cvSide, (e, commit) => {
+    const r = cvSide.getBoundingClientRect();
+    const m = sideMap(r.width, r.height);
+    const x = Math.round(m.x(e.clientX - r.left));
+    const z = Math.round(m.z(e.clientY - r.top));
+    const cx = clamp(x, LIMITS.x[0], LIMITS.x[1]), cz = clamp(z, LIMITS.z[0], LIMITS.z[1]);
+    if (Kin.inWorkZone(cx, cz, st.target.angel)) setTarget({ x: cx, z: cz }, commit ? undefined : false);
+  });
+
+  bindPointer(cvTop, (e, commit) => {
+    const r = cvTop.getBoundingClientRect();
+    const dx = e.clientX - r.left - r.width / 2;
+    const dy = r.height / 2 - (e.clientY - r.top);
+    let a = Math.round((Math.atan2(dy, dx) * 180) / Math.PI + 90);
+    if (a <= 0) a += 360;
+    setTarget({ angel: clamp(a, LIMITS.angel[0], LIMITS.angel[1]) }, commit ? undefined : false);
+  });
+
+  window.addEventListener('resize', () => { dirty = true; });
+
+  /* ================================ программы ================================ */
+
+  const SAMPLE = {
+    id: 'sample',
+    name: 'pick_and_place',
+    points: [
+      [200, 200, 180, 150, true, 0], [250, 60, 140, 150, true, 0], [250, 20, 140, 150, true, 200],
+      [250, 20, 140, 150, false, 300], [220, 160, 180, 150, false, 0], [250, 40, 220, 90, false, 0],
+      [250, 40, 220, 90, true, 300], [200, 200, 180, 150, false, 0],
+    ].map(([x, z, angel, pov_gripper, open, pauseMs]) => ({ id: uid(), x, z, angel, pov_gripper, open, pauseMs })),
+  };
+
+  const P = Object.assign({ programs: [SAMPLE], selected: 'sample' }, store.get('armbox.programs', {}));
+  const run = { id: null, index: -1, loop: false, cycle: 0 };
+  const saveProgs = () => store.set('armbox.programs', { programs: P.programs, selected: P.selected });
+  const current = () => P.programs.find((p) => p.id === P.selected);
+
+  function renderPrograms() {
+    const list = $('#prog-list');
+    list.innerHTML = P.programs.length
+      ? P.programs.map((p) => '<li data-id="' + p.id + '" class="' + (p.id === P.selected ? 'on' : '') + '">' +
+          '<span class="n">' + esc(p.name) + '</span>' +
+          '<span class="c">' + (run.id === p.id ? '▶ ' : '') + p.points.length + '</span></li>').join('')
+      : '<li class="empty">Нет программ</li>';
+
+    const p = current();
+    $('#prog-detail').hidden = !p;
+    if (!p) return;
+    const running = run.id === p.id;
+    $('#prog-name').textContent = p.name;
+    $('#prog-meta').textContent = running ? 'цикл ' + run.cycle + ' · точка ' + (run.index + 1) + '/' + p.points.length : p.points.length + ' точ.';
+    const btn = $('#prog-run');
+    btn.textContent = running ? 'Стоп' : 'Запустить';
+    btn.disabled = !running && (!p.points.length || !!run.id);
+    $('#prog-loop').checked = run.loop;
+    $('#point-add').disabled = running;
+
+    const lock = !!run.id;
+    $('#points').innerHTML = p.points.map((w, i) =>
+      '<li data-id="' + w.id + '" class="' + (running && run.index === i ? 'active' : '') + '">' +
+        '<div><div>x ' + w.x + ' · z ' + w.z + ' · ' + w.angel + '°</div>' +
+        '<div class="meta">' + (w.open ? 'открыт' : 'закрыт') + ' · ⟳' + w.pov_gripper + '° · ⏱ ' +
+        '<input class="pause" value="' + w.pauseMs + '" inputmode="numeric" aria-label="Пауза, мс"> мс</div></div>' +
+        '<div class="acts">' +
+          '<button data-act="go" title="Перейти в точку"' + (lock ? ' disabled' : '') + '>⌖</button>' +
+          '<button data-act="set" title="Перезаписать текущей целью"' + (lock ? ' disabled' : '') + '>✎</button>' +
+          '<button data-act="up" title="Выше"' + (lock || i === 0 ? ' disabled' : '') + '>↑</button>' +
+          '<button data-act="down" title="Ниже"' + (lock || i === p.points.length - 1 ? ' disabled' : '') + '>↓</button>' +
+          '<button data-act="del" title="Удалить"' + (lock ? ' disabled' : '') + '>×</button>' +
+        '</div></li>').join('') || '';
+    if (!p.points.length) $('#points').innerHTML = '<li class="meta" style="display:block">Пусто. Задайте цель на вкладке «Управление» и добавьте её сюда.</li>';
+  }
+
+  $('#prog-list').addEventListener('click', (e) => {
+    const li = e.target.closest('li[data-id]');
+    if (!li) return;
+    P.selected = li.dataset.id;
+    saveProgs();
+    renderPrograms();
+  });
+
+  $('#prog-new').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const input = e.target.elements.name;
+    const p = { id: uid(), name: input.value.trim() || 'program_' + (P.programs.length + 1), points: [] };
+    P.programs.push(p);
+    P.selected = p.id;
+    input.value = '';
+    saveProgs();
+    renderPrograms();
+  });
+
+  $('#points').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-act]');
+    const p = current();
+    if (!b || !p) return;
+    const id = b.closest('li').dataset.id;
+    const i = p.points.findIndex((w) => w.id === id);
+    const w = p.points[i];
+    const act = b.dataset.act;
+    if (act === 'go') setTarget({ x: w.x, z: w.z, angel: w.angel, pov_gripper: w.pov_gripper, open: w.open }, true);
+    if (act === 'set') { Object.assign(w, { x: st.target.x, z: st.target.z, angel: st.target.angel, pov_gripper: st.target.pov_gripper, open: st.target.open }); toast('Точка ' + (i + 1) + ' обновлена'); }
+    if (act === 'up' && i > 0) [p.points[i - 1], p.points[i]] = [p.points[i], p.points[i - 1]];
+    if (act === 'down' && i < p.points.length - 1) [p.points[i + 1], p.points[i]] = [p.points[i], p.points[i + 1]];
+    if (act === 'del') p.points.splice(i, 1);
+    saveProgs();
+    renderPrograms();
+  });
+
+  $('#points').addEventListener('change', (e) => {
+    if (!e.target.classList.contains('pause')) return;
+    const p = current();
+    const w = p && p.points.find((x) => x.id === e.target.closest('li').dataset.id);
+    if (w) { w.pauseMs = Math.max(0, Math.round(Number(e.target.value) || 0)); e.target.value = w.pauseMs; saveProgs(); }
+  });
+  $('#points').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.classList.contains('pause')) e.target.blur(); });
+
+  $('#point-add').addEventListener('click', () => {
+    const p = current();
+    if (!p) return;
+    const t = st.target;
+    p.points.push({ id: uid(), x: t.x, z: t.z, angel: t.angel, pov_gripper: t.pov_gripper, open: !!t.open, pauseMs: 0 });
+    saveProgs();
+    renderPrograms();
+    toast('Точка добавлена');
+  });
+
+  $('#prog-loop').addEventListener('change', (e) => { run.loop = e.target.checked; });
+
+  $('#prog-rename').addEventListener('click', () => {
+    const p = current();
+    const name = p && prompt('Название программы', p.name);
+    if (name && name.trim()) { p.name = name.trim(); saveProgs(); renderPrograms(); }
+  });
+  $('#prog-dup').addEventListener('click', () => {
+    const p = current();
+    if (!p) return;
+    const copy = { id: uid(), name: p.name + '_copy', points: p.points.map((w) => Object.assign({}, w, { id: uid() })) };
+    P.programs.push(copy);
+    P.selected = copy.id;
+    saveProgs();
+    renderPrograms();
+  });
+  $('#prog-del').addEventListener('click', () => {
+    const p = current();
+    if (!p || !confirm('Удалить программу «' + p.name + '»?')) return;
+    if (run.id === p.id) run.id = null;
+    P.programs = P.programs.filter((x) => x !== p);
+    P.selected = P.programs[0] ? P.programs[0].id : null;
+    saveProgs();
+    renderPrograms();
+  });
+
+  const exportable = (p) => ({ name: p.name, points: p.points.map(({ x, z, angel, pov_gripper, open, pauseMs }) => ({ x, z, angel, pov_gripper, open, pauseMs })) });
+  $('#prog-export').addEventListener('click', () => download('programs.json', JSON.stringify(P.programs.map(exportable), null, 2)));
+  $('#prog-import').addEventListener('click', () => $('#prog-file').click());
+  $('#prog-file').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    try {
+      const data = JSON.parse(await f.text());
+      const list = (Array.isArray(data) ? data : [data]).filter((r) => r && typeof r.name === 'string' && Array.isArray(r.points));
+      if (!list.length) throw new Error('в файле нет программ');
+      list.forEach((r) => P.programs.push({
+        id: uid(),
+        name: r.name,
+        points: r.points.map((w) => ({ id: uid(), x: +w.x || 0, z: +w.z || 0, angel: +w.angel || 180, pov_gripper: +w.pov_gripper || 150, open: !!w.open, pauseMs: +w.pauseMs || 0 })),
+      }));
+      P.selected = P.programs[P.programs.length - 1].id;
+      saveProgs();
+      renderPrograms();
+      toast('Импортировано программ: ' + list.length);
+    } catch (err) {
+      toast('Не удалось импортировать: ' + err.message, 'error');
+    }
+  });
+
+  $('#prog-run').addEventListener('click', () => {
+    const p = current();
+    if (!p) return;
+    if (run.id === p.id) { run.id = null; renderPrograms(); return; }
+    play(p);
+  });
+
+  async function play(p) {
+    if (st.busy) return toast('Манипулятор занят');
+    const bad = p.points.findIndex((w) => validate(w));
+    if (bad >= 0) return toast('Точка ' + (bad + 1) + ': ' + validate(p.points[bad]), 'error');
+
+    Object.assign(run, { id: p.id, index: 0, cycle: 1 });
+    st.programRunning = true;
+    addLog('info', 'Старт программы «' + p.name + '» (' + p.points.length + ' точ.)');
+    renderPrograms();
+
+    let i = 0;
+    let failed = false;
+    while (run.id === p.id) {
+      if (i >= p.points.length) {
+        if (!run.loop || !p.points.length) break;
+        i = 0;
+        run.cycle++;
+      }
+      const w = p.points[i];
+      run.index = i;
+      renderPrograms();
+      Object.assign(st.target, { x: w.x, z: w.z, angel: w.angel, pov_gripper: w.pov_gripper, open: w.open });
+      renderControl();
+      if (!(await execute(w))) { failed = true; addLog('error', 'Программа остановлена на точке ' + (i + 1)); break; }
+      if (w.pauseMs > 0) await new Promise((r) => setTimeout(r, w.pauseMs));
+      i++;
+    }
+    const byUser = run.id !== p.id;
+    run.id = null;
+    run.index = -1;
+    st.programRunning = false;
+    renderPrograms();
+    renderControl();
+    if (byUser) addLog('warn', 'Программа «' + p.name + '» остановлена');
+    else if (!failed) { addLog('ok', 'Программа «' + p.name + '» завершена'); toast('Программа завершена'); }
+  }
+
+  /* ================================ телеметрия ================================ */
+
+  /** Протокол 1.0: биты 0–9 — величина (0..1023), бит 10 — направление */
+  const loadPct = (raw) => ((raw & 1023) / 1023) * 100 * (raw & 1024 ? -1 : 1);
+
+  /** Мини-график: линия с отступами сверху и снизу, текущее значение — над графиком (в заголовке) */
+  function spark(svg, values, color, valueEl, unit) {
+    if (valueEl) valueEl.textContent = values.length ? Math.round(values[values.length - 1]) + unit : '—';
+    if (values.length < 2) { svg.innerHTML = ''; return; }
+    let lo = Math.min(...values), hi = Math.max(...values);
+    if (hi - lo < 4) { const mid = (hi + lo) / 2; lo = mid - 2; hi = mid + 2; } // ровная линия — по центру, а не у края
+    const top = 8, bottom = 52; // запас сверху и снизу
+    const y = (v) => (bottom - ((v - lo) / (hi - lo)) * (bottom - top)).toFixed(1);
+    const d = values.map((v, i) => (i ? 'L' : 'M') + ((i / (values.length - 1)) * 300).toFixed(1) + ',' + y(v)).join(' ');
+    svg.innerHTML = '<line x1="0" x2="300" y1="' + bottom + '" y2="' + bottom + '" stroke="' + colors.line + '" stroke-width="1" vector-effect="non-scaling-stroke"/>' +
+      '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="1.8" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>';
+  }
+
+  function renderTelemetry() {
+    dirty = true;
+    if (S.tab !== 'telemetry') return;
+    $('#tele-time').textContent = st.updatedAt ? 'обновлено ' + timeStr(st.updatedAt) : 'нет данных';
+    $('#tele-body').innerHTML = MOTORS.map((m) => {
+      const pos = st.pos[m.id], t = st.temp[m.id], l = st.load[m.id];
+      const has = Number.isFinite(pos);
+      const tc = t >= 65 ? 't-crit' : t >= 55 ? 't-warn' : '';
+      return '<tr><td class="id">' + m.id + '</td>' +
+        '<td>' + m.name + '<span class="sub">' + (has ? ((pos / m.ticks) * m.deg).toFixed(1) + '°' : '—') + '</span></td>' +
+        '<td class="r">' + (has ? pos : '—') + '</td>' +
+        '<td class="r ' + tc + '">' + (Number.isFinite(t) ? t : '—') + '</td>' +
+        '<td class="r">' + (Number.isFinite(l) ? Math.round(loadPct(l)) + '%' : '—') + '</td></tr>';
+    }).join('');
+    const maxT = st.history.map((h) => Math.max(...Object.values(h.temp)));
+    const maxL = st.history.map((h) => Math.max(...Object.values(h.load).map((v) => Math.abs(loadPct(v)))));
+    spark($('#spark-temp'), maxT.filter(Number.isFinite), colors.text, $('#spark-temp-val'), ' °C');
+    spark($('#spark-load'), maxL.filter(Number.isFinite), colors.arm, $('#spark-load-val'), ' %');
+  }
+
+  function renderLog() {
+    if (S.tab !== 'telemetry') return;
+    $('#log').innerHTML = st.log.slice(0, 120).map((l) => '<li class="' + l.level + '"><span>' + timeStr(l.t) + '</span><span>' + esc(l.text) + '</span></li>').join('') ||
+      '<li><span></span><span class="muted">Событий нет</span></li>';
+  }
+
+  $('#log-clear').addEventListener('click', () => { st.log = []; renderLog(); });
+  $('#log-save').addEventListener('click', () => download('armbox-log.txt', st.log.slice().reverse().map((l) => new Date(l.t).toISOString() + '\t' + l.level + '\t' + l.text).join('\n'), 'text/plain'));
+
+  /* ================================ консоль API ================================ */
+
+  function fillApiBodies() {
+    const cmd = Driver.normalize(toCommand(st.target));
+    $('#api-body-set').value = JSON.stringify(cmd, null, 2);
+    $('#api-body-ws').value = JSON.stringify(Object.assign({ command: 'exec' }, cmd), null, 2);
+    $('#api-body-lamp').value = JSON.stringify(Driver.lampBody(S.lamp), null, 2);
+  }
+
+  function apiPrint(title, ok, ms, body) {
+    const out = $('#api-out');
+    if (out.textContent === '—') out.innerHTML = '';
+    const text = typeof body === 'string' ? body : Array.isArray(body) ? JSON.stringify(body) : JSON.stringify(body, null, 2);
+    const block = '<span class="dim">' + timeStr(Date.now()) + '  ' + esc(title) + '  ·  ' + ms + ' мс</span>\n' +
+      '<span class="' + (ok ? 'ok' : 'bad') + '">' + (ok ? '✓' : '✗') + '</span> ' + esc(text) + '\n\n';
+    out.innerHTML = block + out.innerHTML;
+  }
+
+  async function apiCall(kind) {
+    const u = urls();
+    const t0 = performance.now();
+    const ms = () => Math.round(performance.now() - t0);
+    try {
+      if (kind === 'pos' || kind === 'temp' || kind === 'load') {
+        const raw = await Driver.request(u.api + '/' + kind);
+        apiPrint('GET /api/motors/' + kind + '  200', true, ms(), raw);
+        // попутно обновим телеметрию в интерфейсе
+        st[kind] = Driver.asDict(raw);
+        dirty = true;
+      } else if (kind === 'cam-status' || kind === 'cam-start' || kind === 'cam-stop') {
+        const c = camera();
+        const res = kind === 'cam-status' ? (await c.status()).raw : kind === 'cam-start' ? await c.start() : await c.stop();
+        apiPrint((kind === 'cam-status' ? 'GET' : 'POST') + ' камера /api/' + kind.slice(4) + '  (' + camAddr() + ')', true, ms(), res == null || res === '' ? 'OK' : res);
+        refreshCam();
+      } else if (kind === 'lamp') {
+        const body = JSON.parse($('#api-body-lamp').value);
+        const res = await Driver.request(u.lamp, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+          body: JSON.stringify(body),
+        }, 5000);
+        apiPrint('PUT /api/lamp  (' + lampAddr() + ')', true, ms(), res == null || res === '' ? 'OK' : res);
+        S.lamp = Driver.lampBody(body); saveSettings(); renderLamp();
+      } else if (kind === 'speed-get') {
+        const res = await Driver.request(u.api + '/speed');
+        apiPrint('GET /api/motors/speed', true, ms(), res);
+        if (res && Number.isFinite(+res.speed)) { st.speed = +res.speed; st.speedSupported = true; renderSpeed(); }
+      } else if (kind === 'speed-set') {
+        const body = JSON.parse($('#api-body-speed').value);
+        const res = await Driver.request(u.api + '/speed', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+          body: JSON.stringify(body),
+        });
+        apiPrint('POST /api/motors/speed', true, ms(), res);
+        if (Number.isFinite(+body.speed)) { st.speed = +body.speed; st.speedSupported = true; renderSpeed(); }
+      } else if (kind === 'set') {
+        const body = JSON.parse($('#api-body-set').value);
+        const err = validate({ x: body.x, z: body.z, angel: body.angel, pov_gripper: body.pov_gripper, open: true });
+        if (err && !confirm(err + '. Всё равно отправить?')) return;
+        const res = await Driver.request(u.api + '/pos/set', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+          body: JSON.stringify(body),
+        }, 120000);
+        apiPrint('POST /api/motors/pos/set', true, ms(), res);
+      } else if (kind === 'ws') {
+        const payload = JSON.parse($('#api-body-ws').value);
+        const err = validate({ x: payload.x, z: payload.z, angel: payload.angel, pov_gripper: payload.pov_gripper, open: true });
+        if (err && !confirm(err + '. Всё равно отправить?')) return;
+        const reply = await new Promise((resolve, reject) => {
+          const ws = new WebSocket(u.ws);
+          const timer = setTimeout(() => { ws.close(); reject(new Error('нет ответа за 60 с')); }, 60000);
+          ws.onopen = () => ws.send(JSON.stringify(payload));
+          ws.onmessage = (e) => { clearTimeout(timer); ws.close(); resolve(JSON.parse(e.data)); };
+          ws.onerror = () => { clearTimeout(timer); reject(new Error('не удалось подключиться к ' + u.ws)); };
+        });
+        apiPrint('WS /ws', reply && reply.status === 'ok', ms(), reply);
+      }
+    } catch (e) {
+      const titles = { 'cam-status': 'GET камера /api/status', 'cam-start': 'POST камера /api/start', 'cam-stop': 'POST камера /api/stop', lamp: 'PUT /api/lamp', ws: 'WS /ws', set: 'POST /api/motors/pos/set', 'speed-get': 'GET /api/motors/speed', 'speed-set': 'POST /api/motors/speed' };
+      apiPrint(titles[kind] || 'GET /api/motors/' + kind, false, ms(), e.message);
+    }
+  }
+
+  $$('[data-api]').forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true;
+    await apiCall(b.dataset.api);
+    b.disabled = false;
+  }));
+  $('#api-fill').addEventListener('click', fillApiBodies);
+  $('#api-clear').addEventListener('click', () => { $('#api-out').textContent = '—'; });
+
+  /* ================================ настройки ================================ */
+
+  function renderSettings() {
+    $('#s-demo').checked = S.demo;
+    const host = $('#s-host'), port = $('#s-port'), mode = $('#s-mode');
+    if (proxy.kind === 'serve') { host.value = proxy.host; port.value = proxy.port; }
+    else if (proxy.kind === 'nginx') {
+      try { const u = new URL(proxy.url); host.value = u.hostname; port.value = u.port || 80; } catch (_) { host.value = proxy.url || ''; port.value = ''; }
+    } else { host.value = S.host; port.value = S.port; }
+    host.disabled = port.disabled = proxy.kind === 'nginx';
+    mode.textContent = proxy.kind === 'serve'
+      ? 'Через прокси serve.py — CORS не нужен.'
+      : proxy.kind === 'nginx'
+        ? 'Задаётся переменной BACKEND_URL в docker-compose (nginx).'
+        : 'Прямое подключение: backend должен разрешать CORS (см. README). Проще запустить serve.py.';
+    $('#s-poll').value = S.pollMs;
+    const lh = $('#s-lamp-host'), lp = $('#s-lamp-port');
+    if (proxy.kind === 'nginx') {
+      try { const u = new URL(proxy.lampUrl); lh.value = u.hostname; lp.value = u.port || 80; } catch (_) { lh.value = ''; lp.value = ''; }
+    } else if (proxy.kind === 'serve' && !S.lampHost && !S.lampPort) {
+      lh.value = proxy.lampHost && proxy.lampHost !== proxy.host ? proxy.lampHost : '';
+      lp.value = proxy.lampPort && proxy.lampPort !== 80 ? proxy.lampPort : '';
+    } else { lh.value = S.lampHost; lp.value = S.lampPort; }
+    lh.placeholder = proxy.kind === 'serve' ? proxy.host : hostOf();
+    lh.disabled = lp.disabled = proxy.kind === 'nginx';
+    const ch = $('#s-cam-host'), cpo = $('#s-cam-port');
+    if (proxy.kind === 'nginx') {
+      try { const u = new URL(proxy.camUrl); ch.value = u.hostname; cpo.value = u.port || 80; } catch (_) { ch.value = ''; cpo.value = ''; }
+    } else if (proxy.kind === 'serve' && !S.camHost) { ch.value = proxy.camHost || ''; cpo.value = proxy.camPort || ''; }
+    else { ch.value = S.camHost; cpo.value = S.camPort; }
+    ch.disabled = cpo.disabled = proxy.kind === 'nginx';
+    $$('#s-transport button').forEach((b) => b.classList.toggle('on', b.dataset.v === S.transport));
+    $$('#s-grip button').forEach((b) => b.classList.toggle('on', b.dataset.v === S.gripTrue));
+  }
+
+  $('#s-demo').addEventListener('change', (e) => { S.demo = e.target.checked; saveSettings(); startDriver(); });
+  $('#banner-demo').addEventListener('click', () => { S.demo = true; saveSettings(); renderSettings(); startDriver(); });
+  $('#s-transport').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    S.transport = b.dataset.v;
+    saveSettings();
+    renderSettings();
+    startDriver();
+  });
+  $('#s-grip').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    S.gripTrue = b.dataset.v;
+    saveSettings();
+    renderSettings();
+    renderControl();
+  });
+  /** Прочитать и проверить IP и порт из полей */
+  function readAddr() {
+    const host = $('#s-host').value.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '') || '127.0.0.1';
+    const port = +($('#s-port').value.trim() || 8000);
+    if (!/^[\w.\-]+$/.test(host)) throw new Error('Некорректный IP-адрес');
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Порт должен быть от 1 до 65535');
+    return { host, port };
+  }
+
+  $('#s-apply').addEventListener('click', async () => {
+    let addr;
+    try { addr = readAddr(); } catch (e) { toast(e.message, 'error'); return; }
+    if (proxy.kind !== 'nginx') {
+      S.host = addr.host;
+      S.port = String(addr.port);
+      if (proxy.kind === 'serve') {
+        try { await pushBackend(addr.host, addr.port); } catch (e) { toast('Прокси не принял адрес: ' + e.message, 'error'); return; }
+      }
+    }
+    S.pollMs = clamp(Math.round(+$('#s-poll').value) || 1000, 200, 10000);
+    const lampHost = $('#s-lamp-host').value.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    const lampPort = $('#s-lamp-port').value.trim();
+    if (lampHost && !/^[\w.\-]+$/.test(lampHost)) { toast('Некорректный IP лампы', 'error'); return; }
+    if (lampPort && !(+lampPort >= 1 && +lampPort <= 65535)) { toast('Порт лампы должен быть от 1 до 65535', 'error'); return; }
+    S.lampHost = lampHost;
+    S.lampPort = lampPort;
+    const camHost = $('#s-cam-host').value.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    const camPort = $('#s-cam-port').value.trim();
+    if (camHost && !/^[\w.\-]+$/.test(camHost)) { toast('Некорректный IP камеры', 'error'); return; }
+    if (camPort && !(+camPort >= 1 && +camPort <= 65535)) { toast('Порт камеры должен быть от 1 до 65535', 'error'); return; }
+    if (proxy.kind !== 'nginx') { S.camHost = camHost; S.camPort = camPort; }
+    if (proxy.kind === 'serve') {
+      try { await pushBackend(proxy.host, proxy.port, lampPref() || { host: '', port: 80 }); } catch (e) { toast('Прокси не принял адрес лампы: ' + e.message, 'error'); return; }
+    }
+    saveSettings();
+    renderSettings();
+    renderControl();
+    startDriver();
+    toast('Настройки применены');
+  });
+  $('#s-reset').addEventListener('click', () => {
+    if (!confirm('Сбросить настройки?')) return;
+    const theme = S.theme;
+    Object.assign(S, DEFAULTS, { theme, tab: 'settings' });
+    saveSettings();
+    renderSettings();
+    renderControl();
+    startDriver();
+  });
+  $('#s-test').addEventListener('click', async () => {
+    const out = $('#s-result');
+    let addr;
+    try { addr = readAddr(); } catch (e) { out.hidden = false; out.className = 'small error'; out.textContent = '✗ ' + e.message; return; }
+    // через serve.py проверяем указанный адрес, временно переключив прокси
+    const prev = proxy.kind === 'serve' ? { host: proxy.host, port: proxy.port } : null;
+    const savedHost = S.host, savedPort = S.port;
+    if (proxy.kind === 'none') { S.host = addr.host; S.port = String(addr.port); }
+    if (prev) { try { await pushBackend(addr.host, addr.port); } catch (_) { /* покажем ошибку ниже */ } }
+    const u = urls();
+    S.host = savedHost; S.port = savedPort;
+    out.hidden = false;
+    out.className = 'small muted';
+    out.textContent = 'Проверка…';
+    const d = new Driver.RealDriver(u.api, u.ws);
+    const t0 = performance.now();
+    try {
+      const pos = await d.getPos();
+      const ms = Math.round(performance.now() - t0);
+      const wsOk = await new Promise((res) => {
+        let done = false;
+        d.onWs((s) => { if (!done && (s === 'open' || s === 'closed')) { done = true; res(s === 'open'); } });
+        d.connect();
+        setTimeout(() => { if (!done) { done = true; res(false); } }, 4000);
+      });
+      out.className = 'small';
+      let speedTxt = '';
+      try { const sp = await d.getSpeed(); speedTxt = ' · скорость: ' + sp + ' %'; } catch (e) { speedTxt = isNotFound(e) ? ' · метода скорости нет (нужен патч)' : ''; }
+      out.textContent = '✓ ' + addr.host + ':' + addr.port + ' · REST: ' + Object.keys(pos).length + ' моторов, ' + ms + ' мс · WebSocket: ' + (wsOk ? 'доступен' : 'недоступен') + speedTxt;
+    } catch (e) {
+      out.className = 'small error';
+      out.textContent = '✗ ' + e.message;
+    } finally {
+      d.dispose();
+      if (prev) { try { await pushBackend(prev.host, prev.port); } catch (_) { /* ignore */ } }
+    }
+  });
+
+  /* ================================== камера ================================== */
+
+  const camHostOf = () => (S.camHost || '').trim() || '192.168.0.105';
+  const camPortOf = () => +S.camPort || 8080;
+  function camAddr() {
+    if (proxy.kind === 'serve') return (proxy.camHost || camHostOf()) + ':' + (proxy.camPort || camPortOf());
+    if (proxy.kind === 'nginx') return String(proxy.camUrl || '').replace(/^https?:\/\//, '');
+    return camHostOf() + ':' + camPortOf();
+  }
+  const camBase = () => (proxy.kind !== 'none' ? '/camera' : 'http://' + camHostOf() + ':' + camPortOf());
+  const camera = () => new Driver.Camera(camBase());
+  const cam = { running: null, raw: null, error: '', live: false, busy: false, view: 'scheme' };
+  const camImg = $('#stage-cam-img');
+
+  function renderCam() {
+    $('#cam-addr').textContent = camAddr() + (proxy.kind !== 'none' ? ' · через прокси' : '');
+    $('#cam-state').textContent = cam.error ? 'нет ответа' : cam.running === true ? 'включена' : cam.running === false ? 'выключена' : '—';
+    $('#cam-state').style.color = cam.error ? 'var(--err)' : cam.running ? 'var(--ok)' : '';
+    $('#cam-raw').textContent = cam.error ? cam.error : cam.raw == null ? '—' : typeof cam.raw === 'string' ? cam.raw : JSON.stringify(cam.raw, null, 2);
+    $('#cam-open').href = camBase() + '/stream';
+    const tg = $('#cam-toggle');
+    tg.checked = !!cam.running;
+    tg.disabled = cam.busy;
+    $('#cam-toggle-text').textContent = cam.busy ? (cam.running ? 'Выключаем…' : 'Включаем…') : cam.running ? 'Камера включена' : 'Камера выключена';
+    // сцена
+    const camOn = cam.view === 'camera';
+    $('#stage-cam').hidden = !camOn;
+    $('.view-side').hidden = camOn;
+    camImg.hidden = !cam.live;
+    $('#stage-cam-live').hidden = !cam.live;
+    $('#stage-cam-msg').hidden = cam.live;
+    $('#stage-cam-msg').textContent = cam.error
+      ? 'Камера не отвечает (' + camAddr() + '): ' + cam.error
+      : cam.running === false ? 'Камера выключена — включите её переключателем справа.' : 'Ждём изображение…';
+  }
+
+  function camStream(on) {
+    if (on) {
+      camImg.onload = () => { cam.live = true; renderCam(); };
+      camImg.onerror = () => { cam.live = false; renderCam(); };
+      camImg.src = camera().streamUrl();
+    } else {
+      camImg.onload = camImg.onerror = null;
+      camImg.removeAttribute('src');
+      cam.live = false;
+    }
+  }
+
+  async function refreshCam() {
+    if (cam.busy) return;
+    try {
+      const s = await camera().status();
+      cam.raw = s.raw; cam.running = s.running; cam.error = '';
+    } catch (e) {
+      cam.raw = null; cam.running = null; cam.error = e.message;
+    }
+    if (cam.view === 'camera') {
+      if (cam.running !== false && !cam.error && !camImg.getAttribute('src')) camStream(true);
+      if ((cam.running === false || cam.error) && camImg.getAttribute('src')) camStream(false);
+    }
+    renderCam();
+  }
+
+  async function camCommand(kind) {
+    try {
+      const res = kind === 'start' ? await camera().start() : await camera().stop();
+      addLog('ok', 'Камера: ' + (kind === 'start' ? 'включена' : 'выключена') + (res && typeof res === 'object' ? ' ' + JSON.stringify(res) : ''));
+      if (kind === 'stop') camStream(false);
+    } catch (e) {
+      addLog('error', 'Камера (' + camAddr() + '): ' + e.message);
+      toast('Камера: ' + e.message, 'error');
+    }
+    if (kind === 'start') await new Promise((r) => setTimeout(r, 500));
+    await refreshCam();
+  }
+
+  function setStageView(v) {
+    cam.view = v;
+    if (v === 'camera') refreshCam();
+    else { camStream(false); dirty = true; }
+    renderCam();
+  }
+
+  $('#cam-toggle').addEventListener('change', async (e) => {
+    const want = e.target.checked;
+    cam.busy = true;
+    renderCam();
+    if (!want) camStream(false);
+    try {
+      const res = want ? await camera().start() : await camera().stop();
+      cam.running = want;
+      addLog('ok', 'Камера ' + (want ? 'включена' : 'выключена') + (res && typeof res === 'object' ? ' ' + JSON.stringify(res) : ''));
+    } catch (err) {
+      addLog('error', 'Камера (' + camAddr() + '): ' + err.message);
+      toast('Камера: ' + err.message, 'error');
+    }
+    if (want) await new Promise((r) => setTimeout(r, 500));
+    cam.busy = false;
+    await refreshCam();
+  });
+  $('#cam-refresh').addEventListener('click', refreshCam);
+  setInterval(() => { if (cam.view === 'camera' || S.tab === 'camera') refreshCam(); }, 5000);
+
+  /* ============================== вкладки и тема ============================== */
+
+  function showTab(tab) {
+    S.tab = tab;
+    saveSettings();
+    $$('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
+    $$('.pane').forEach((p) => { p.hidden = p.dataset.pane !== tab; });
+    if (tab === 'programs') renderPrograms();
+    if (tab === 'telemetry') { renderTelemetry(); renderLog(); }
+    if (tab === 'settings') renderSettings();
+    setStageView(tab === 'camera' ? 'camera' : 'scheme'); // поток — только на вкладке «Камера»
+    if (tab === 'api') {
+      const u = urls();
+      $('#api-base').textContent = backendAddr() + (u.api.startsWith('/') ? ' · через прокси' : '');
+      if (!$('#api-body-set').value) fillApiBodies();
+    }
+  }
+  $('.tabs').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) showTab(b.dataset.tab); });
+
+  function applyTheme() {
+    document.documentElement.dataset.theme = S.theme;
+    readColors();
+    renderTelemetry();
+  }
+  $('#theme').addEventListener('click', () => { S.theme = S.theme === 'dark' ? 'light' : 'dark'; saveSettings(); applyTheme(); });
+
+  /* ================================== старт ================================== */
+
+  applyTheme();
+  showTab(S.tab || 'control');
+  renderControl();
+  renderSpeed();
+  requestAnimationFrame(frame);
+  (async () => {
+    await detectProxy();
+    // адрес, сохранённый в браузере, передаём прокси serve.py
+    if (proxy.kind === 'serve' && (S.host || S.lampHost || S.lampPort || S.camHost)) {
+      try { await pushBackend(S.host ? hostOf() : proxy.host, S.host ? portOf() : proxy.port, lampPref()); } catch (_) { /* ignore */ }
+    }
+    renderLamp();
+    if (S.tab === 'settings') renderSettings();
+    startDriver();
+  })();
+})();

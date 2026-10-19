@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#E4E7EA">
+  <title>ARM·BOX</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%23FF5A1F'/%3E%3Ccircle cx='8' cy='8' r='3' fill='%231F242B'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="assets/present.css">
+</head>
+<body>
+  <header class="bar">
+    <div class="brand">ARM<span>·</span>BOX</div>
+
+    <nav class="seg tabs" id="tabs" role="tablist" aria-label="Разделы">
+      <button role="tab" data-page="control" aria-selected="true">Управление</button>
+      <button role="tab" data-page="camera" aria-selected="false">Камера</button>
+    </nav>
+
+    <div class="bar-right">
+      <div class="seg speed" id="speed" role="radiogroup" aria-label="Скорость руки">
+        <button data-v="10" role="radio">Плавно</button>
+        <button data-v="30" role="radio">Обычно</button>
+        <button data-v="60" role="radio">Быстро</button>
+      </div>
+      <span class="status" id="status"><i></i><span>Подключение…</span></span>
+      <button class="icon" id="theme" title="Тема" aria-label="Сменить тему"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 1.5a6.5 6.5 0 0 1 0 13z" fill="currentColor"/></svg></button>
+      <button class="icon" id="fullscreen" title="Во весь экран" aria-label="Во весь экран">
+        <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="stage" id="stage">
+    <canvas id="cv" aria-label="Схема руки: фактическое положение и цель"></canvas>
+
+    <dl class="readout" aria-live="off">
+      <div><dt>Вылет</dt><dd><b id="ro-x">—</b> мм</dd></div>
+      <div><dt>Высота</dt><dd><b id="ro-z">—</b> мм</dd></div>
+      <div><dt>База</dt><dd><b id="ro-a">—</b>°</dd></div>
+      <div><dt>Схват</dt><dd><b id="ro-p">—</b>°</dd></div>
+    </dl>
+
+    <div class="offline" id="offline" hidden>
+      <p class="offline-title">Рука не отвечает</p>
+      <p class="offline-text" id="offline-text"></p>
+      <div class="offline-actions">
+        <button class="btn" id="retry">Повторить</button>
+        <button class="btn" id="go-demo">Показать демо</button>
+        <a class="btn ghost" href="debug.html" id="go-settings">Настройки подключения</a>
+      </div>
+    </div>
+  </main>
+
+  <section class="deck">
+    <div class="deck-stick">
+      <div id="stick-left"></div>
+      <p class="caption">Вылет и высота</p>
+    </div>
+
+    <div class="deck-center">
+      <button class="grip" id="grip" aria-pressed="false">
+        <svg class="grip-icon" viewBox="0 0 32 32" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <path class="jaw-l" d="M11 4v10l-3 6v8"/>
+          <path class="jaw-r" d="M21 4v10l3 6v8"/>
+        </svg>
+        <span id="grip-text">Открыть схват</span>
+      </button>
+
+      <div class="lamp" id="lamp" role="group" aria-label="Лампа">
+        <button data-lamp="red" aria-pressed="false" aria-label="Красный" style="--c:#e5484d"></button>
+        <button data-lamp="yellow" aria-pressed="false" aria-label="Жёлтый" style="--c:#f5b400"></button>
+        <button data-lamp="green" aria-pressed="false" aria-label="Зелёный" style="--c:#30a46c"></button>
+        <button data-lamp="blue" aria-pressed="false" aria-label="Голубой" style="--c:#3ab8f0"></button>
+      </div>
+      <p class="caption">Лампа</p>
+
+      <button class="home" id="home">Вернуть домой</button>
+    </div>
+
+    <div class="deck-stick">
+      <div id="stick-right"></div>
+      <p class="caption">Поворот базы и схвата</p>
+    </div>
+  </section>
+
+  <!-- Вкладка «Камера»: только поток и переключатель -->
+  <section class="campage" id="campage" hidden>
+    <div class="cam-head">
+      <label class="toggle">
+        <input type="checkbox" id="cam-toggle" role="switch">
+        <span class="toggle-track" aria-hidden="true"></span>
+        <span class="toggle-text" id="cam-toggle-text">Камера выключена</span>
+      </label>
+      <span class="cam-addr" id="cam-addr"></span>
+    </div>
+    <div class="cam-frame">
+      <img id="cam-img" alt="Изображение с камеры" hidden>
+      <span class="cam-live" id="cam-live" hidden><i></i>Прямой эфир</span>
+      <div class="cam-empty" id="cam-empty">
+        <p class="cam-empty-title" id="cam-title">Камера выключена</p>
+        <p class="cam-empty-text" id="cam-text">Включите её переключателем сверху.</p>
+      </div>
+    </div>
+  </section>
+
+  <a class="debug-link" href="debug.html">Отладка</a>
+  <div class="toast" id="toast" role="status" hidden></div>
+
+  <script src="assets/kinematics.js"></script>
+  <script src="assets/driver.js"></script>
+  <script src="assets/joystick.js"></script>
+  <script src="assets/present.js"></script>
+</body>
+</html>
