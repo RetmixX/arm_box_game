@@ -58,18 +58,56 @@ test('поле у самой базы ловится как ошибка кал�
 
 test('план рисования: маркер опускается на высоту касания и поднимается', () => {
   const plan = T.drawPlan(T.DEFAULT_CAL, 4, 'X');
-  assert.equal(plan[0].z, T.DEFAULT_CAL.zTravel);
+  const h = T.heights(T.DEFAULT_CAL);
+  assert.equal(plan[0].z, h.approach);
   assert.ok(plan.some((p) => p.z === T.DEFAULT_CAL.zDraw));
   assert.equal(plan[plan.length - 1].label, 'на стоянку');
   for (const p of plan) assert.equal(T.checkPose(p), null, p.label);
+});
+
+test('маркер 60 мм: высоты по умолчанию и подход к клетке сверху', () => {
+  const cal = T.defaultCal('X');
+  const h = T.heights(cal);
+  assert.deepEqual(h, { draw: 60, travel: 100, approach: 160 }, 'кончик маркера: касание, +40 и +100 мм над листом');
+  for (const cell of [0, 4, 8]) {
+    for (const mark of ['X', 'O']) {
+      const plan = T.drawPlan(cal, cell, mark);
+      const [a, over] = plan;
+      assert.equal(a.z, h.approach, 'к клетке — на высоте подхода');
+      assert.deepEqual([over.x, over.angel, over.z], [a.x, a.angel, h.travel], 'затем вертикально вниз до проезда');
+      const back = plan[plan.length - 2];
+      assert.equal(back.z, h.approach, 'от клетки — вверх до высоты подхода, потом стоянка');
+      assert.deepEqual([back.x, back.angel], [plan[plan.length - 3].x, plan[plan.length - 3].angel]);
+      // ниже проезда рука бывает только с опущенным маркером
+      for (const p of plan) if (p.z < h.travel) assert.ok(/маркер вниз|рисует/.test(p.label), p.label);
+    }
+  }
+  // касание подобрали — проезд и подход сдвинулись вместе с ним
+  assert.deepEqual(T.heights({ ...cal, zDraw: 57 }), { draw: 57, travel: 97, approach: 157 });
+});
+
+test('старая калибровка (zTravel, касание 20 без маркера) переносится на подъёмы над листом', () => {
+  const m = T.migrateCal({ side: 90, zDraw: 20, zTravel: 60, cu: 210 });
+  assert.equal(m.touchReset, true);
+  assert.equal(m.cal.zDraw, 60);
+  assert.equal(m.cal.liftTravel, 40);
+  assert.equal(m.cal.liftApproach, 100);
+  assert.ok(!('zTravel' in m.cal));
+  assert.equal(m.cal.cu, 210);
+  const tuned = T.migrateCal({ zDraw: 58, zTravel: 90 }); // касание уже подобрано на руке — не трогаем
+  assert.equal(tuned.touchReset, false);
+  assert.equal(tuned.cal.zDraw, 58);
+  assert.equal(tuned.cal.liftTravel, 32);
+  const fresh = T.defaultCal('O');
+  assert.deepEqual(T.migrateCal(fresh).cal, fresh, 'новый формат не меняется');
 });
 
 test('поправка клетки: вылет, высота касания и база прибавляются ко всем командам этой клетки', () => {
   const base = T.defaultCal('X');
   const cal = T.defaultCal('X');
   cal.fix[0] = { x: 4, z: -2, a: 3 };
-  const [o0, t0] = T.cellPlan(base, 0, true);
-  const [o1, t1] = T.cellPlan(cal, 0, true);
+  const [o0, t0] = T.cellPlan(base, 0, true, false);
+  const [o1, t1] = T.cellPlan(cal, 0, true, false);
   assert.equal(o1.x, o0.x + 4);
   assert.equal(o1.angel, o0.angel + 3);
   assert.equal(o1.z, o0.z, 'высота проезда не меняется');
@@ -80,7 +118,7 @@ test('поправка клетки: вылет, высота касания и 
   d1.forEach((p, i) => {
     assert.equal(p.x, d0[i].x + 4);
     assert.equal(p.angel, d0[i].angel + 3);
-    assert.equal(p.z, d0[i].z === base.zTravel ? base.zTravel : d0[i].z - 2);
+    assert.equal(p.z, d0[i].z > base.zDraw + 5 ? d0[i].z : d0[i].z - 2, p.label);
   });
   // другие клетки не тронуты
   assert.deepEqual(T.drawPlan(cal, 4, 'X'), T.drawPlan(base, 4, 'X'));

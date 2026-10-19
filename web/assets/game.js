@@ -41,12 +41,15 @@
     const out = Object.assign(d, s);
     out.dev = Object.assign(d.dev, s.dev);
     out.score = Object.assign({ X: 0, O: 0, D: 0 }, s.score);
-    out.cal = {
-      X: Object.assign(TTT.defaultCal('X'), s.cal && s.cal.X),
-      O: Object.assign(TTT.defaultCal('O'), s.cal && s.cal.O),
-    };
+    out.cal = {};
+    SIDES.forEach((side) => {
+      const m = TTT.migrateCal(s.cal && s.cal[side]);
+      out.cal[side] = Object.assign(TTT.defaultCal(side), m.cal);
+      if (m.touchReset) touchResetFor.push(side);
+    });
     return out;
   }
+  const touchResetFor = []; // руки, у которых старое касание z = 20 поднято под маркер 60 мм
   const S = loadSettings();
   if (/[?&]demo\b/.test(location.search)) S.demo = true;
   const save = () => write(KEY, S);
@@ -135,6 +138,12 @@
     const a = arms[side];
     if (!a.driver) throw new Error('Рука ' + SIGN[side] + ' не настроена — укажите её адрес на вкладке «Настройка»');
     if (!armReady(side)) throw new Error('Рука ' + SIGN[side] + ' не отвечает (' + armAddr(side) + ')' + (a.err ? ': ' + a.err : ''));
+    // переезд к другой клетке или на стоянку — сначала вертикально вверх на высоту подхода,
+    // чтобы база не поворачивалась, пока маркер низко над листом
+    const up = Math.round(TTT.heights(S.cal[side]).approach);
+    if (a.last && plan.length && plan[0].cell !== a.last.cell && a.last.z < up) {
+      plan = [Object.assign({}, a.last, { z: up, label: 'вверх перед переездом' })].concat(plan);
+    }
     for (const step of plan) {
       const e = TTT.checkPose(step);
       if (e) throw new Error('Калибровка руки ' + SIGN[side] + ': ' + step.label + ' — ' + e);
@@ -935,9 +944,10 @@
       save(); fillForm();
       kind = 'touch';
     }
+    const near = atCell(side, cell); // уже над этой клеткой — подниматься на высоту подхода незачем
     const plans = {
-      over: [TTT.cellPlan(cal, cell, false), 'над клеткой ' + TTT.cellName(cell)],
-      touch: [TTT.cellPlan(cal, cell, true), 'касание, высота ' + cal.zDraw + ' мм'],
+      over: [TTT.cellPlan(cal, cell, false, !near), 'над клеткой ' + TTT.cellName(cell)],
+      touch: [TTT.cellPlan(cal, cell, true, !near), 'касание, высота ' + cal.zDraw + ' мм'],
       // проверка рисования — без стоянки: рука остаётся над клеткой, знак видно сразу
       X: [TTT.drawPlan(cal, cell, 'X', false), 'рисует ✕ в ' + TTT.cellName(cell)],
       O: [TTT.drawPlan(cal, cell, 'O', false), 'рисует ○ в ' + TTT.cellName(cell)],
@@ -945,12 +955,13 @@
     };
     const [plan, title] = plans[kind];
     // «касание» повторно: маркер уже внизу — достаточно одной точки
-    const run = kind === 'touch' && markerDown(side) ? plan.slice(1) : plan;
+    const run = kind === 'touch' && near && markerDown(side) ? plan.slice(-1) : plan;
     await runTest(side, run, title, kind === 'touch' ? ' Маркер должен едва касаться листа; если нет — −1 / +1.' : '');
   }
   $$('[data-test]').forEach((b) => b.addEventListener('click', () => test(b.dataset.test)));
 
   const markerDown = (side) => !!(arms[side].last && arms[side].last.label === 'касание');
+  const atCell = (side, cell) => !!(arms[side].last && arms[side].last.cell === cell);
 
   async function runTest(side, plan, title, note) {
     testing = true;
@@ -1009,10 +1020,10 @@
     const fix = Array.from({ length: 9 }, (_, i) => TTT.cellFix(cal, i));
     fix[cell] = next;
     const trial = Object.assign({}, cal, { fix });
-    const down = markerDown(side);
+    const down = markerDown(side) && atCell(side, cell);
     const touch = down || key === 'z';
-    let plan = TTT.cellPlan(trial, cell, touch);
-    if (down) plan = key === 'z' ? plan.slice(1) : [Object.assign({}, arms[side].last, { z: Math.round(+cal.zTravel), label: 'маркер вверх' })].concat(plan);
+    let plan = TTT.cellPlan(trial, cell, touch, !atCell(side, cell));
+    if (down) plan = key === 'z' ? plan.slice(-1) : [Object.assign({}, arms[side].last, { z: Math.round(TTT.heights(cal).travel), label: 'маркер вверх' })].concat(plan);
     for (const p of plan) {
       const e = TTT.checkPose(p);
       if (e) { toast('Так нельзя: ' + e); return; }
@@ -1060,7 +1071,7 @@
       Object.assign(S.dev, d.dev || {});
       if (d.transport) S.transport = d.transport;
       if (typeof d.lamps === 'boolean') S.lamps = d.lamps;
-      SIDES.forEach((side) => { if (d.cal && d.cal[side]) S.cal[side] = Object.assign(TTT.defaultCal(side), d.cal[side]); });
+      SIDES.forEach((side) => { if (d.cal && d.cal[side]) S.cal[side] = Object.assign(TTT.defaultCal(side), TTT.migrateCal(d.cal[side]).cal); });
       save(); fillForm(); startArms(); refreshCam();
       toast('Настройки загружены');
     } catch (err) {
@@ -1107,4 +1118,8 @@
   render();
   robotTurn();
   requestAnimationFrame(frame);
+  if (touchResetFor.length) {
+    save();
+    toast('Высота касания руки ' + touchResetFor.map((s) => SIGN[s]).join(' и ') + ' поднята до ' + TTT.DEFAULT_CAL.zDraw + ' мм: маркер торчит на 60 мм. Подберите касание заново на вкладке «Настройка»');
+  }
 })();

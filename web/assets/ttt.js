@@ -191,6 +191,15 @@
   // paint_pov — поле /pos/set-paint (по умолчанию 50), диапазон как у pov_gripper
   const LIMITS = { x: [10, 300], z: [10, 300], angel: [1, 360], pov_gripper: [1, 300], paint_pov: [1, 300] };
 
+  /**
+   * Высоты схвата (z команды), мм. Касание zDraw — абсолютное, подбирается на руке;
+   * проезд и подход — подъём кончика маркера над листом, поэтому от длины маркера не зависят.
+   */
+  function heights(cal) {
+    const d = +cal.zDraw;
+    return { draw: d, travel: d + +cal.liftTravel, approach: d + +cal.liftApproach };
+  }
+
   /** Высота касания с поправкой на вылет: жёсткая насадка не прощает неровностей */
   function drawZ(x, cal) {
     return +cal.zDraw + (+cal.zTilt || 0) * ((x - +cal.cu) / 100);
@@ -222,30 +231,43 @@
 
   /**
    * Нарисовать знак mark ('X' | 'O') в клетке cell.
-   * Возвращает позы — каждая одна команда руке.
+   * Возвращает позы — каждая одна команда руке; у каждой поле cell — над какой клеткой рука.
+   * К клетке и от неё рука идёт на высоте подхода и опускается/поднимается вертикально:
+   * поворот базы на низкой высоте — риск задеть маркером стол. Внутри клетки — высота проезда.
    */
   function drawPlan(cal, cell, mark, withPark = true) {
-    const T = +cal.zTravel;
+    const { travel: T, approach: A } = heights(cal);
+    const f = cellFix(cal, cell);
+    const P = (pt, z, label) => Object.assign(pose(pt, z, cal, label, f), { cell });
     const out = [];
     const strokes = markStrokes(cell, mark, cal);
-    const f = cellFix(cal, cell);
+    out.push(P(strokes[0][0], A, 'подход к клетке ' + cellName(cell)));
     strokes.forEach((s, si) => {
       const name = mark === 'X' ? 'линия ' + (si + 1) + ' из 2' : 'окружность';
-      out.push(pose(s[0], T, cal, 'к клетке ' + cellName(cell), f));
-      out.push(pose(s[0], 'draw', cal, 'маркер вниз', f));
-      for (let k = 1; k < s.length; k++) out.push(pose(s[k], 'draw', cal, 'рисует: ' + name, f));
-      out.push(pose(s[s.length - 1], T, cal, 'маркер вверх', f));
+      out.push(P(s[0], T, si ? 'к началу линии ' + (si + 1) : 'над клеткой ' + cellName(cell)));
+      out.push(P(s[0], 'draw', 'маркер вниз'));
+      for (let k = 1; k < s.length; k++) out.push(P(s[k], 'draw', 'рисует: ' + name));
+      out.push(P(s[s.length - 1], T, 'маркер вверх'));
     });
+    const end = strokes[strokes.length - 1];
+    out.push(P(end[end.length - 1], A, 'отход вверх'));
     if (withPark) out.push(park(cal));
     return dedupe(out);
   }
 
-  /** Над центром клетки; touch — опустить маркер до касания */
-  function cellPlan(cal, cell, touch) {
+  /**
+   * Над центром клетки: подход сверху (approach) → высота проезда; touch — ещё и опустить маркер до касания.
+   * approach = false — рука уже над этой клеткой, подниматься на высоту подхода незачем.
+   */
+  function cellPlan(cal, cell, touch, approach = true) {
     const c = cellBoard(cell, +cal.pitch);
     const f = cellFix(cal, cell);
-    const list = [pose(c, +cal.zTravel, cal, 'над клеткой ' + cellName(cell), f)];
-    if (touch) list.push(pose(c, 'draw', cal, 'касание', f));
+    const P = (z, label) => Object.assign(pose(c, z, cal, label, f), { cell });
+    const h = heights(cal);
+    const list = [];
+    if (approach) list.push(P(h.approach, 'подход к клетке ' + cellName(cell)));
+    list.push(P(h.travel, 'над клеткой ' + cellName(cell)));
+    if (touch) list.push(P('draw', 'касание'));
     return list;
   }
 
@@ -290,7 +312,8 @@
     }
     const pk = checkPose(park(cal));
     if (pk) list.push('Стоянка: ' + pk);
-    if (!(+cal.zTravel > +cal.zDraw + 15)) list.push('Высота проезда должна быть хотя бы на 15 мм выше касания');
+    if (!(+cal.liftTravel >= 15)) list.push('Подъём между штрихами — хотя бы 15 мм над листом');
+    if (!(+cal.liftApproach >= +cal.liftTravel)) list.push('Подъём при подходе к клетке должен быть не меньше подъёма между штрихами');
     return { cells, park: pk, list };
   }
 
@@ -299,13 +322,35 @@
   /** Калибровка по умолчанию без стороны (side 0); сторону руки задаёт DEFAULT_SIDE — см. defaultCal */
   const DEFAULT_CAL = {
     side: 0, turn: 0, cu: 200, cv: 0, pitch: 50,
-    zTravel: 60, zDraw: 20, zTilt: 0,
+    // маркер торчит из держателя на 60 мм: кончик касается листа примерно при z схвата = 60
+    zDraw: 60, liftTravel: 40, liftApproach: 100, zTilt: 0,
     size: 0.6, step: 4, pov: 150, paintPov: 50,
     parkX: 160, parkZ: 200, parkAngel: 260,
   };
 
   /** Где стоят руки на столе: лист вертикальный, рука ✕ у левого края, рука ○ у правого */
   const DEFAULT_SIDE = { X: 90, O: 270 };
+
+  /**
+   * Сохранённая калибровка старого формата (абсолютные zTravel / zApproach) → подъёмы над листом.
+   * Касание z = 20 — старое значение по умолчанию для схвата без маркера: с маркером 60 мм оно вдавило бы
+   * маркер в стол, поэтому поднимаем до нового значения по умолчанию. Возвращает { cal, touchReset }.
+   */
+  function migrateCal(saved) {
+    if (!saved || typeof saved !== 'object') return { cal: saved, touchReset: false };
+    const c = Object.assign({}, saved);
+    const old = !('liftTravel' in c) && ('zTravel' in c || 'zDraw' in c);
+    let touchReset = false;
+    if (old) {
+      const d = Number.isFinite(+c.zDraw) ? +c.zDraw : DEFAULT_CAL.zDraw;
+      c.liftTravel = Number.isFinite(+c.zTravel) ? Math.max(15, +c.zTravel - d) : DEFAULT_CAL.liftTravel;
+      c.liftApproach = Number.isFinite(+c.zApproach) ? Math.max(c.liftTravel, +c.zApproach - d) : Math.max(c.liftTravel, DEFAULT_CAL.liftApproach);
+      if (d === 20) { c.zDraw = DEFAULT_CAL.zDraw; touchReset = true; }
+    }
+    delete c.zTravel;
+    delete c.zApproach;
+    return { cal: c, touchReset };
+  }
 
   /** Копия калибровки по умолчанию для руки side ('X' | 'O'); поправки клеток — свой массив на каждую копию */
   const defaultCal = (side) => Object.assign({}, DEFAULT_CAL, { side: DEFAULT_SIDE[side], fix: Array.from({ length: 9 }, () => Object.assign({}, NO_FIX)) });
@@ -314,7 +359,7 @@
     LINES, other, result, free, turnOf, minimax, bestMoves, winningMove, chooseMove, LEVELS,
     cellBoard, cellFix, FIX_LIMITS, boardToArm, armToBoard, armToPolar, polarToArm, markStrokes,
     drawPlan, cellPlan, park, checkPose, checkCalibration, cellName, DEFAULT_CAL,
-    DEFAULT_SIDE, defaultCal,
+    DEFAULT_SIDE, defaultCal, heights, migrateCal,
   };
   root.TTT = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
