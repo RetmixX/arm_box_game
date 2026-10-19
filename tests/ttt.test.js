@@ -144,7 +144,7 @@ test('слишком большая поправка клетки — в спи�
 test('позы игры — для /pos/set-paint: paint_pov из калибровки (по умолчанию 50), без gripper_state', () => {
   const cal = T.defaultCal('X');
   assert.equal(cal.paintPov, 50);
-  const plan = T.drawPlan(cal, 4, 'O');
+  const plan = T.drawPlan(cal, 4, 'X');
   for (const p of plan) {
     assert.equal(p.paint_pov, 50, p.label);
     assert.ok(!('grip' in p) && !('gripper_state' in p), p.label);
@@ -153,4 +153,58 @@ test('позы игры — для /pos/set-paint: paint_pov из калибро
   assert.match(T.checkPose({ ...plan[0], paint_pov: 400 }), /paint_pov 400/);
   assert.match(T.checkPose({ ...plan[0], paint_pov: 0 }), /paint_pov 0 вне 1–300/, 'диапазон как у pov_gripper');
   assert.match(T.checkPose({ ...plan[0], paint_pov: NaN }), /paint_pov/);
+});
+
+test('маркер смещён от оси: ✕ и касание ставят в точку кончик маркера', () => {
+  const cal = { ...T.defaultCal('X'), markerA: 12, markerB: -7 };
+  // ось ↔ кончик — обратные преобразования
+  for (const [u, v] of [[200, 0], [150, 60], [260, -80]]) {
+    const ax = T.tipToAxis(u, v, cal);
+    const tip = T.axisToTip(ax.u, ax.v, cal);
+    assert.ok(Math.hypot(tip.u - u, tip.v - v) < 1e-9);
+  }
+  // по командам руки (целые x и угол) кончик попадает в точки линий ✕ с точностью квантования
+  for (const cell of [0, 4, 8]) {
+    const strokes = T.markStrokes(cell, 'X', cal).flat();
+    const draw = T.drawPlan(cal, cell, 'X', false).filter((p) => /рисует|маркер вниз/.test(p.label));
+    assert.equal(draw.length, strokes.length);
+    draw.forEach((p, i) => {
+      const ax = T.polarToArm(p.x, p.angel);
+      const tip = T.axisToTip(ax.u, ax.v, cal);
+      const want = T.boardToArm(strokes[i].bx, strokes[i].by, cal);
+      assert.ok(Math.hypot(tip.u - want.u, tip.v - want.v) < 3, 'клетка ' + cell + ', точка ' + i);
+    });
+  }
+  // без компенсации кончик ушёл бы на величину смещения
+  const plain = T.cellPlan({ ...cal, markerA: 0, markerB: 0 }, 4, true, false)[1];
+  const ax = T.polarToArm(plain.x, plain.angel);
+  const off = T.axisToTip(ax.u, ax.v, cal);
+  const c = T.boardToArm(0, 0, cal);
+  assert.ok(Math.hypot(off.u - c.u, off.v - c.v) > 13);
+});
+
+test('○ рисует поворот paint_pov: ось в центре клетки, рука стоит, paint_pov от → до', () => {
+  const cal = { ...T.defaultCal('O'), markerA: 12, markerB: -7, paintFrom: 1, paintTo: 300 };
+  const plan = T.drawPlan(cal, 4, 'O');
+  const center = T.cellPlan({ ...cal, markerA: 0, markerB: 0 }, 4, true, false)[1]; // ось ровно над центром
+  const atCell = plan.filter((p) => p.label !== 'на стоянку');
+  for (const p of atCell) assert.deepEqual([p.x, p.angel], [center.x, center.angel], p.label);
+  const down = atCell.findIndex((p) => p.label === 'маркер вниз');
+  assert.equal(atCell[down].paint_pov, 1, 'маркер опускается при paint_pov «от»');
+  assert.equal(atCell[down + 1].paint_pov, 300, 'одна команда — поворот до «до»');
+  assert.equal(atCell[down + 1].z, atCell[down].z, 'во время поворота маркер на листе');
+  assert.equal(atCell.filter((p) => p.label.startsWith('рисует')).length, 1);
+  assert.equal(plan[plan.length - 1].paint_pov, 50, 'на стоянке — paint_pov по умолчанию');
+  for (const p of plan) assert.equal(T.checkPose(p), null, p.label);
+  // радиус круга — смещение маркера
+  assert.ok(Math.abs(T.markerRadius(cal) - Math.hypot(12, 7)) < 1e-9);
+});
+
+test('смещение маркера: не задано — в «todo», круг больше клетки — ошибка калибровки', () => {
+  const def = T.checkCalibration(T.defaultCal('X'));
+  assert.deepEqual(def.list, []);
+  assert.ok(def.todo.some((t) => /Смещение маркера/.test(t)));
+  assert.deepEqual(T.checkCalibration({ ...T.defaultCal('X'), markerA: 10 }).todo, []);
+  assert.ok(T.checkCalibration({ ...T.defaultCal('X'), markerA: 25 }).list.some((t) => /не помещается в клетку/.test(t)));
+  assert.ok(T.checkCalibration({ ...T.defaultCal('X'), markerA: 10, paintFrom: 40, paintTo: 40 }).list.some((t) => /совпадают/.test(t)));
 });

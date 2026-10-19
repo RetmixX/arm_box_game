@@ -208,10 +208,21 @@
             <label class="fld"><span>Подъём при подходе к клетке</span><input data-k="liftApproach" inputmode="decimal"><em>мм над листом</em></label>
             <label class="fld"><span>Поправка на 100 мм вылета</span><input data-k="zTilt" inputmode="decimal"><em>мм</em></label>
             <label class="fld"><span>Поворот схвата</span><input data-k="pov" inputmode="decimal"><em>°</em></label>
-            <label class="fld"><span>Размер знака</span><input data-k="size" data-scale="100" inputmode="decimal"><em>% клетки</em></label>
+            <label class="fld"><span>Размер ✕</span><input data-k="size" data-scale="100" inputmode="decimal"><em>% клетки</em></label>
             <label class="fld"><span>Шаг штриха</span><input data-k="step" inputmode="decimal"><em>мм</em></label>
             <label class="fld"><span>paint_pov</span><input data-k="paintPov" inputmode="numeric"><em>по умолч. 50</em></label>
           </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Маркер смещён от оси <small>○ рисует поворот paint_pov</small></legend>
+          <div class="grid">
+            <label class="fld"><span>Смещение вдоль руки</span><input data-k="markerA" inputmode="decimal"><em>мм, от базы +</em></label>
+            <label class="fld"><span>Смещение поперёк руки</span><input data-k="markerB" inputmode="decimal"><em>мм, влево +</em></label>
+            <label class="fld"><span>Круг: paint_pov от</span><input data-k="paintFrom" inputmode="numeric"><em>1…300</em></label>
+            <label class="fld"><span>Круг: paint_pov до</span><input data-k="paintTo" inputmode="numeric"><em>1…300</em></label>
+          </div>
+          <p class="hint" id="marker-hint">Как измерить: при нулевом смещении нажмите «Нарисовать ○», затем «Касание» в той же клетке. Точка касания лежит на круге. Смещение — от центра круга до точки: вдоль руки (от базы — плюс) и поперёк (влево, если смотреть от базы вдоль руки, — плюс). Задайте смещение до калибровки центра поля: с ним «Касание» и ✕ ставят в точку кончик маркера, а ○ — ось.</p>
         </fieldset>
 
         <fieldset>

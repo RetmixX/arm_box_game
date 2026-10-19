@@ -177,11 +177,13 @@
         densify([{ bx: c.bx + h, by: c.by + h }, { bx: c.bx - h, by: c.by - h }], step),
       ];
     }
-    const n = Math.max(12, Math.ceil((2 * Math.PI * h) / step));
+    // ○ рисует поворот paint_pov: кончик маркера ходит по кругу радиусом смещения вокруг оси в центре клетки
+    const r = markerRadius(cal) || h;
+    const n = Math.max(12, Math.ceil((2 * Math.PI * r) / step));
     const ring = [];
-    for (let k = 0; k <= n + 1; k++) { // +1: небольшой нахлёст, чтобы кольцо замкнулось
+    for (let k = 0; k <= n; k++) {
       const t = Math.PI / 2 + (2 * Math.PI * k) / n;
-      ring.push({ bx: c.bx + h * Math.cos(t), by: c.by + h * Math.sin(t) });
+      ring.push({ bx: c.bx + r * Math.cos(t), by: c.by + r * Math.sin(t) });
     }
     return [ring];
   }
@@ -205,17 +207,50 @@
     return +cal.zDraw + (+cal.zTilt || 0) * ((x - +cal.cu) / 100);
   }
 
-  /** Поза над точкой поля; fix — поправка клетки (высота — только для касания и рисования) */
-  function pose(pt, z, cal, label, fix = NO_FIX) {
+  /* ======================= маркер смещён от оси paint_pov ======================= */
+
+  /** Радиус круга, который описывает кончик маркера при повороте paint_pov, мм */
+  const markerRadius = (cal) => Math.hypot(+cal.markerA || 0, +cal.markerB || 0);
+
+  /**
+   * Кончик маркера смещён от оси поворота paint_pov: при paint_pov = cal.paintPov он на markerA мм
+   * дальше от базы и на markerB мм левее оси (если смотреть от базы вдоль руки). Смещение поворачивается
+   * вместе с базой, поэтому ось ставим так, чтобы в точку (u, v) попал именно кончик:
+   * кончик = (ρ + a)·e(t) + b·e⊥(t)  ⇒  ρ = √(R² − b²) − a,  t = ψ − atan2(b, ρ + a).
+   * Возвращает ось (u, v) или null, если точка ближе к оси базы, чем смещение поперёк.
+   */
+  function tipToAxis(u, v, cal) {
+    const a = +cal.markerA || 0, b = +cal.markerB || 0;
+    if (!a && !b) return { u, v };
+    const R = Math.hypot(u, v);
+    if (R <= Math.abs(b)) return null;
+    const rho = Math.sqrt(R * R - b * b) - a;
+    const t = Math.atan2(v, u) - Math.atan2(b, rho + a);
+    return { u: rho * Math.cos(t), v: rho * Math.sin(t) };
+  }
+
+  /** Где окажется кончик маркера при оси в (u, v) и paint_pov = cal.paintPov (обратное к tipToAxis) */
+  function axisToTip(u, v, cal) {
+    const a = +cal.markerA || 0, b = +cal.markerB || 0;
+    const t = Math.atan2(v, u), rho = Math.hypot(u, v);
+    return { u: (rho + a) * Math.cos(t) - b * Math.sin(t), v: (rho + a) * Math.sin(t) + b * Math.cos(t) };
+  }
+
+  /**
+   * Поза над точкой поля; fix — поправка клетки (высота — только для касания и рисования).
+   * По умолчанию в точку ставится кончик маркера; opt.axis — ось paint_pov (круг ○), opt.paint — свой paint_pov.
+   */
+  function pose(pt, z, cal, label, fix = NO_FIX, opt = {}) {
     const a = boardToArm(pt.bx, pt.by, cal);
-    const p = armToPolar(a.u, a.v);
+    const ax = opt.axis ? a : tipToAxis(a.u, a.v, cal);
+    const p = ax ? armToPolar(ax.u, ax.v) : { x: NaN, angel: NaN };
     const x = p.x + fix.x;
     return {
       x: Math.round(x),
       z: Math.round(z === 'draw' ? drawZ(x, cal) + fix.z : z),
       angel: Math.round(p.angel + fix.a),
       pov_gripper: clamp(Math.round(+cal.pov), 1, 300),
-      paint_pov: Math.round(+cal.paintPov),
+      paint_pov: Math.round(opt.paint !== undefined ? +opt.paint : +cal.paintPov),
       label,
     };
   }
@@ -238,8 +273,21 @@
   function drawPlan(cal, cell, mark, withPark = true) {
     const { travel: T, approach: A } = heights(cal);
     const f = cellFix(cal, cell);
-    const P = (pt, z, label) => Object.assign(pose(pt, z, cal, label, f), { cell });
+    const P = (pt, z, label, opt) => Object.assign(pose(pt, z, cal, label, f, opt), { cell });
     const out = [];
+    if (mark === 'O') {
+      // ○ — поворотом paint_pov: ось в центре клетки, рука стоит, маркер обходит круг сам
+      const c = cellBoard(cell, +cal.pitch);
+      const from = +cal.paintFrom, to = +cal.paintTo;
+      out.push(P(c, A, 'подход к клетке ' + cellName(cell), { axis: true, paint: from }));
+      out.push(P(c, T, 'над клеткой ' + cellName(cell), { axis: true, paint: from }));
+      out.push(P(c, 'draw', 'маркер вниз', { axis: true, paint: from }));
+      out.push(P(c, 'draw', 'рисует: окружность (paint_pov ' + Math.round(from) + ' → ' + Math.round(to) + ')', { axis: true, paint: to }));
+      out.push(P(c, T, 'маркер вверх', { axis: true, paint: to }));
+      out.push(P(c, A, 'отход вверх', { axis: true, paint: to }));
+      if (withPark) out.push(park(cal));
+      return dedupe(out);
+    }
     const strokes = markStrokes(cell, mark, cal);
     out.push(P(strokes[0][0], A, 'подход к клетке ' + cellName(cell)));
     strokes.forEach((s, si) => {
@@ -291,7 +339,10 @@
     return null;
   }
 
-  /** Проверка калибровки: оба знака во всех клетках и стоянка. Возвращает { cells: [ошибка|null ×9], park, list } */
+  /**
+   * Проверка калибровки: оба знака во всех клетках и стоянка.
+   * Возвращает { cells: [ошибка|null ×9], park, list — ошибки, todo — что ещё не откалибровано }
+   */
   function checkCalibration(cal) {
     const cells = [];
     const list = [];
@@ -313,8 +364,13 @@
     const pk = checkPose(park(cal));
     if (pk) list.push('Стоянка: ' + pk);
     if (!(+cal.liftTravel >= 15)) list.push('Подъём между штрихами — хотя бы 15 мм над листом');
+    const r = markerRadius(cal);
+    if (2 * r > 0.9 * +cal.pitch) list.push('Круг ○ диаметром ' + Math.round(2 * r) + ' мм не помещается в клетку ' + cal.pitch + ' мм — проверьте смещение маркера');
+    if (Math.round(+cal.paintFrom) === Math.round(+cal.paintTo)) list.push('Круг ○: paint_pov «от» и «до» совпадают — маркер не повернётся');
+    const todo = [];
+    if (r < 3) todo.push('Смещение маркера от оси не задано: ○ рисуется поворотом paint_pov и без смещения выйдет точкой, ✕ — без компенсации смещения');
     if (!(+cal.liftApproach >= +cal.liftTravel)) list.push('Подъём при подходе к клетке должен быть не меньше подъёма между штрихами');
-    return { cells, park: pk, list };
+    return { cells, park: pk, list, todo };
   }
 
   const cellName = (i) => 'АБВ'[i % 3] + (3 - Math.floor(i / 3));
@@ -325,6 +381,8 @@
     // маркер торчит из держателя на 60 мм: кончик касается листа примерно при z схвата = 60
     zDraw: 60, liftTravel: 40, liftApproach: 100, zTilt: 0,
     size: 0.6, step: 4, pov: 150, paintPov: 50,
+    // смещение кончика маркера от оси paint_pov при paint_pov = paintPov; круг ○ — поворот paint_pov от…до
+    markerA: 0, markerB: 0, paintFrom: 1, paintTo: 300,
     parkX: 160, parkZ: 200, parkAngel: 260,
   };
 
@@ -359,7 +417,7 @@
     LINES, other, result, free, turnOf, minimax, bestMoves, winningMove, chooseMove, LEVELS,
     cellBoard, cellFix, FIX_LIMITS, boardToArm, armToBoard, armToPolar, polarToArm, markStrokes,
     drawPlan, cellPlan, park, checkPose, checkCalibration, cellName, DEFAULT_CAL,
-    DEFAULT_SIDE, defaultCal, heights, migrateCal,
+    DEFAULT_SIDE, defaultCal, heights, migrateCal, tipToAxis, axisToTip, markerRadius,
   };
   root.TTT = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

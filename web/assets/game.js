@@ -624,10 +624,11 @@
     if (setup) {
       const chk = TTT.checkCalibration(S.cal[edit]).cells;
       for (let i = 0; i < 9; i++) {
-        // точка, куда рука реально встанет над клеткой (с поправкой клетки и округлением команды)
+        // куда реально встанет кончик маркера (поправка клетки, смещение маркера, округление команды)
         const o = TTT.cellPlan(S.cal[edit], i, false)[0];
-        const uv = TTT.polarToArm(o.x, o.angel);
-        const c = TTT.armToBoard(uv.u, uv.v, S.cal[edit]);
+        const ax = TTT.polarToArm(o.x, o.angel);
+        const tip = TTT.axisToTip(ax.u, ax.v, S.cal[edit]);
+        const c = TTT.armToBoard(tip.u, tip.v, S.cal[edit]);
         g.fillStyle = chk[i] ? C.bad : C.signal;
         g.globalAlpha = chk[i] ? 0.25 : 1;
         if (chk[i]) g.fillRect(X(c.bx - pitch / 2) + 1, Y(c.by + pitch / 2) + 1, pitch * s - 2, pitch * s - 2);
@@ -831,9 +832,13 @@
     SIDES.forEach((side) => { res[side] = TTT.checkCalibration(S.cal[side]); });
     const items = [];
     SIDES.forEach((side) => res[side].list.forEach((t) => items.push('<li>Рука ' + SIGN[side] + ' · ' + esc(t) + '</li>')));
+    const todo = [];
+    SIDES.forEach((side) => res[side].todo.forEach((t) => todo.push('<li class="todo">Рука ' + SIGN[side] + ' · ' + esc(t) + '</li>')));
     if (+S.cal.X.pitch !== +S.cal.O.pitch) items.push('<li>Шаг клетки у рук разный (' + S.cal.X.pitch + ' и ' + S.cal.O.pitch + ' мм) — лист один, шаг должен совпадать</li>');
     if (!items.length) items.push('<li class="ok">Обе руки достают до всех клеток и стоянки</li>');
-    $('#checks').innerHTML = items.join('');
+    $('#checks').innerHTML = items.concat(todo).join('');
+    const r = TTT.markerRadius(S.cal[S.edit]);
+    $('#marker-hint').dataset.r = r ? 'Круг ○ — диаметр ' + Math.round(2 * r) + ' мм. ' : '';
     $$('.fld').forEach((f) => f.classList.remove('bad'));
     dirty = true;
   }
