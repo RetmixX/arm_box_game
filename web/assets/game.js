@@ -529,7 +529,7 @@
 
   window.addEventListener('keydown', (e) => {
     if (S.page !== 'play' || e.metaKey || e.ctrlKey || e.altKey) return;
-    if (/INPUT|TEXTAREA|SELECT/.test((e.target && e.target.tagName) || '') || $('#dlg-new').open) return;
+    if (/INPUT|TEXTAREA|SELECT/.test((e.target && e.target.tagName) || '') || document.querySelector('dialog[open]')) return;
     const d = /^(Digit|Numpad)([1-9])$/.exec(e.code);
     if (d) {
       const i = KEYS.indexOf(+d[2]);
@@ -902,11 +902,24 @@
     el.addEventListener('blur', fillForm);
     el.addEventListener('focus', () => el.select());
   });
-  $('#cal-reset').addEventListener('click', () => {
-    if (!confirm('Сбросить всю калибровку руки ' + SIGN[S.edit] + '? Сторона, центр поля, маркер, стоянка и поправки клеток вернутся к значениям по умолчанию.')) return;
-    S.cal[S.edit] = TTT.defaultCal(S.edit);
+
+  /** Подтверждение окном на странице (не confirm(): его браузер может подавить, и сброс молча не сработает) */
+  function ask(title, text, okLabel) {
+    const dlg = $('#dlg-ask');
+    $('#ask-title').textContent = title;
+    $('#ask-text').textContent = text;
+    $('#ask-ok').textContent = okLabel;
+    dlg.returnValue = '';
+    dlg.showModal();
+    return new Promise((r) => dlg.addEventListener('close', () => r(dlg.returnValue === 'ok'), { once: true }));
+  }
+
+  $('#cal-reset').addEventListener('click', async () => {
+    const side = S.edit;
+    if (!(await ask('Сбросить калибровку руки ' + SIGN[side] + '?', 'Сторона, центр поля, шаг, маркер, paint_pov, стоянка и поправки клеток вернутся к значениям по умолчанию. Рука не двигается.', 'Сбросить всё'))) return;
+    S.cal[side] = TTT.defaultCal(side);
     save(); fillForm();
-    $('#test-state').textContent = 'Рука ' + SIGN[S.edit] + ': калибровка сброшена к значениям по умолчанию. Рука не двигалась.';
+    $('#test-state').textContent = 'Рука ' + SIGN[side] + ': калибровка сброшена к значениям по умолчанию. Рука не двигалась.';
   });
 
   $('#t-cell').innerHTML = Array.from({ length: 9 }, (_, i) => '<option value="' + i + '"' + (i === 4 ? ' selected' : '') + '>Клетка ' + TTT.cellName(i) + '</option>').join('');
@@ -1019,11 +1032,12 @@
     setFix(cell, f, key);
   }));
   $('#fix-reset').addEventListener('click', () => setFix(+$('#t-cell').value, { x: 0, z: 0, a: 0 }, 'x'));
-  $('#fix-reset-all').addEventListener('click', () => {
-    if (!confirm('Обнулить поправки всех клеток руки ' + SIGN[S.edit] + '? Общая калибровка останется.')) return;
-    S.cal[S.edit].fix = TTT.defaultCal(S.edit).fix;
+  $('#fix-reset-all').addEventListener('click', async () => {
+    const side = S.edit;
+    if (!(await ask('Обнулить поправки клеток руки ' + SIGN[side] + '?', 'Вылет, высота и база всех 9 клеток станут 0. Общая калибровка останется. Рука не двигается.', 'Обнулить'))) return;
+    S.cal[side].fix = TTT.defaultCal(side).fix;
     save(); fillForm();
-    $('#test-state').textContent = 'Рука ' + SIGN[S.edit] + ': поправки всех клеток обнулены. Рука не двигалась.';
+    $('#test-state').textContent = 'Рука ' + SIGN[side] + ': поправки всех клеток обнулены. Рука не двигалась.';
   });
 
   // перенос настроек на вторую вебку

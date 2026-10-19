@@ -286,6 +286,18 @@
     </form>
   </dialog>
 
+  <!-- подтверждение на самой странице: confirm() браузер может молча подавить -->
+  <dialog class="dialog" id="dlg-ask">
+    <form method="dialog">
+      <p class="dialog-title" id="ask-title"></p>
+      <p class="dialog-text" id="ask-text"></p>
+      <div class="dialog-actions">
+        <button class="btn signal" value="ok" id="ask-ok">Сбросить</button>
+        <button class="btn ghost" value="cancel" autofocus>Отмена</button>
+      </div>
+    </form>
+  </dialog>
+
   <div class="toast" id="toast" role="status" hidden></div>
 
   <script src="assets/kinematics.js"></script>
