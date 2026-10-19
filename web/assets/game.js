@@ -30,7 +30,7 @@
     physical: true,
     lamps: true,
     score: { X: 0, O: 0, D: 0 },
-    cal: { X: Object.assign({}, TTT.DEFAULT_CAL), O: Object.assign({}, TTT.DEFAULT_CAL, { side: 180 }) },
+    cal: { X: TTT.defaultCal('X'), O: TTT.defaultCal('O') },
     edit: 'X',
     page: 'play',
   });
@@ -42,8 +42,8 @@
     out.dev = Object.assign(d.dev, s.dev);
     out.score = Object.assign({ X: 0, O: 0, D: 0 }, s.score);
     out.cal = {
-      X: Object.assign({}, TTT.DEFAULT_CAL, s.cal && s.cal.X),
-      O: Object.assign({}, TTT.DEFAULT_CAL, { side: 180 }, s.cal && s.cal.O),
+      X: Object.assign(TTT.defaultCal('X'), s.cal && s.cal.X),
+      O: Object.assign(TTT.defaultCal('O'), s.cal && s.cal.O),
     };
     return out;
   }
@@ -907,7 +907,7 @@
   });
   $('#cal-reset').addEventListener('click', () => {
     if (!confirm('Сбросить калибровку руки ' + SIGN[S.edit] + '?')) return;
-    S.cal[S.edit] = Object.assign({}, TTT.DEFAULT_CAL, S.edit === 'O' ? { side: 180 } : {});
+    S.cal[S.edit] = TTT.defaultCal(S.edit);
     save(); fillForm();
   });
 
@@ -968,7 +968,7 @@
       Object.assign(S.dev, d.dev || {});
       if (d.transport) S.transport = d.transport;
       if (typeof d.lamps === 'boolean') S.lamps = d.lamps;
-      SIDES.forEach((side) => { if (d.cal && d.cal[side]) S.cal[side] = Object.assign({}, TTT.DEFAULT_CAL, d.cal[side]); });
+      SIDES.forEach((side) => { if (d.cal && d.cal[side]) S.cal[side] = Object.assign(TTT.defaultCal(side), d.cal[side]); });
       save(); fillForm(); startArms(); refreshCam();
       toast('Настройки загружены');
     } catch (err) {

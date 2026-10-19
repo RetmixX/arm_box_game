@@ -36,8 +36,19 @@ test('поле ↔ рука: обратное преобразование', () 
 });
 
 test('калибровка по умолчанию укладывается в рабочую зону обеих рук', () => {
-  assert.deepEqual(T.checkCalibration(T.DEFAULT_CAL).list, []);
-  assert.deepEqual(T.checkCalibration({ ...T.DEFAULT_CAL, side: 180 }).list, []);
+  assert.deepEqual(T.checkCalibration(T.defaultCal('X')).list, []);
+  assert.deepEqual(T.checkCalibration(T.defaultCal('O')).list, []);
+});
+
+test('по умолчанию рука ✕ у левого края листа, рука ○ — у правого', () => {
+  const dist = (side, cell) => {
+    const cal = T.defaultCal(side);
+    const c = T.cellBoard(cell, cal.pitch);
+    const a = T.boardToArm(c.bx, c.by, cal);
+    return Math.hypot(a.u, a.v);
+  };
+  assert.ok(dist('X', 3) < dist('X', 5), 'рука ✕ ближе к А2, чем к В2');
+  assert.ok(dist('O', 5) < dist('O', 3), 'рука ○ ближе к В2, чем к А2');
 });
 
 test('поле у самой базы ловится как ошибка калибровки', () => {

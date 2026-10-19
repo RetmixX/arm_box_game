@@ -270,7 +270,7 @@
 
   const cellName = (i) => 'АБВ'[i % 3] + (3 - Math.floor(i / 3));
 
-  /** Калибровка по умолчанию: рука ✕ снизу поля, рука ○ сверху */
+  /** Калибровка по умолчанию без стороны (side 0); сторону руки задаёт DEFAULT_SIDE — см. defaultCal */
   const DEFAULT_CAL = {
     side: 0, turn: 0, cu: 200, cv: 0, pitch: 50,
     zTravel: 60, zDraw: 20, zTilt: 0,
@@ -278,10 +278,17 @@
     parkX: 160, parkZ: 200, parkAngel: 260,
   };
 
+  /** Где стоят руки на столе: лист вертикальный, рука ✕ у левого края, рука ○ у правого */
+  const DEFAULT_SIDE = { X: 90, O: 270 };
+
+  /** Копия калибровки по умолчанию для руки side ('X' | 'O') */
+  const defaultCal = (side) => Object.assign({}, DEFAULT_CAL, { side: DEFAULT_SIDE[side] });
+
   const api = {
     LINES, other, result, free, turnOf, minimax, bestMoves, winningMove, chooseMove, LEVELS,
     cellBoard, boardToArm, armToBoard, armToPolar, polarToArm, markStrokes,
     drawPlan, cellPlan, park, checkPose, checkCalibration, cellName, DEFAULT_CAL,
+    DEFAULT_SIDE, defaultCal,
   };
   root.TTT = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
