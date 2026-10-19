@@ -271,6 +271,7 @@
    * поворот базы на низкой высоте — риск задеть маркером стол. Внутри клетки — высота проезда.
    */
   function drawPlan(cal, cell, mark, withPark = true) {
+    if (chainOf(cal, cell)) return chainPlan(cal, cell, withPark);
     const { travel: T, approach: A } = heights(cal);
     const f = cellFix(cal, cell);
     const P = (pt, z, label, opt) => Object.assign(pose(pt, z, cal, label, f, opt), { cell });
@@ -323,15 +324,85 @@
     return list;
   }
 
-  /**
-   * Позиция клетки, выставленная вручную (вкладка «Позиции»), → поправка клетки.
-   * p — команда касания в центре клетки { x, z, angel }; withZ = false — высоту касания не трогать
-   * (маркер не опускали). Дальше все планы клетки строятся от этой позиции.
+  /* ============================ цепочки точек ============================ */
+
+  /*
+   * Цепочка клетки — абсолютные команды руке, которые она проходит по порядку: зависание над полем,
+   * спуск, рисование знака, подъём. Точка: { x, z, angel, paint_pov, line }; line — идти к ней по прямой
+   * (отрезок дробится с шагом step мм: рука двигается по суставам, одной командой вышла бы дуга),
+   * иначе — одной командой. Цепочка своя у каждой клетки и руки; нет цепочки — рисуется по расчёту.
    */
-  function fixFromPose(cal, cell, p, withZ) {
-    const m = cellPlan(Object.assign({}, cal, { fix: [] }), cell, true, false)[1];
-    const old = cellFix(cal, cell);
-    return { x: p.x - m.x, z: withZ ? p.z - m.z : old.z, a: p.angel - m.angel };
+  function chainOf(cal, cell) {
+    const c = cal.chains && cal.chains[cell];
+    return Array.isArray(c) && c.length ? c : null;
+  }
+
+  function chainPose(cal, cell, p, label) {
+    return {
+      x: Math.round(+p.x), z: Math.round(+p.z), angel: Math.round(+p.angel),
+      pov_gripper: clamp(Math.round(+cal.pov), 1, 300), paint_pov: Math.round(+p.paint_pov), label, cell,
+    };
+  }
+
+  /** Команды по цепочке клетки (+ стоянка) */
+  function chainPlan(cal, cell, withPark = true) {
+    const pts = chainOf(cal, cell) || [];
+    const step = clamp(+cal.step || 4, 1, 20);
+    const out = [];
+    pts.forEach((p, k) => {
+      const name = 'точка ' + (k + 1) + ' из ' + pts.length;
+      const prev = pts[k - 1];
+      if (p.line && prev) {
+        const a = polarToArm(+prev.x, +prev.angel), b = polarToArm(+p.x, +p.angel);
+        const dz = +p.z - +prev.z, dp = +p.paint_pov - +prev.paint_pov;
+        const n = Math.max(1, Math.ceil(Math.hypot(b.u - a.u, b.v - a.v, dz) / step));
+        for (let j = 1; j < n; j++) {
+          const f = j / n;
+          const q = armToPolar(a.u + (b.u - a.u) * f, a.v + (b.v - a.v) * f);
+          out.push(chainPose(cal, cell, { x: q.x, angel: q.angel, z: +prev.z + dz * f, paint_pov: +prev.paint_pov + dp * f }, 'линия к точке ' + (k + 1)));
+        }
+      }
+      out.push(chainPose(cal, cell, p, name));
+    });
+    if (withPark) out.push(park(cal));
+    return dedupe(out);
+  }
+
+  /** Ошибка цепочки клетки или null: начало и конец — над листом, все команды — в рабочей зоне */
+  function checkChain(cal, cell) {
+    const pts = chainOf(cal, cell);
+    if (!pts) return null;
+    if (pts.length < 2) return 'в цепочке меньше двух точек';
+    const T = Math.round(heights(cal).travel);
+    if (+pts[0].z < T) return 'первая точка (z ' + pts[0].z + ') ниже высоты проезда ' + T + ' — цепочка должна начинаться над листом';
+    if (+pts[pts.length - 1].z < T) return 'последняя точка (z ' + pts[pts.length - 1].z + ') ниже высоты проезда ' + T + ' — цепочка должна заканчиваться над листом';
+    for (const p of chainPlan(cal, cell, false)) {
+      const e = checkPose(p);
+      if (e) return p.label + ': ' + e;
+    }
+    return null;
+  }
+
+  /**
+   * Черновик цепочки по текущей калибровке — чтобы не начинать с нуля: ✕ — зависание, по каждой линии
+   * спуск → линия до конца → подъём, отход вверх; ○ — те же команды, что при рисовании по расчёту.
+   */
+  function draftChain(cal, cell, mark) {
+    const base = Object.assign({}, cal, { chains: [] });
+    const pt = (q, line) => ({ x: q.x, z: q.z, angel: q.angel, paint_pov: q.paint_pov, line: !!line });
+    if (mark === 'O') return drawPlan(base, cell, 'O', false).map((q) => pt(q, false));
+    const { travel: T, approach: A } = heights(base);
+    const f = cellFix(base, cell);
+    const P = (b, z) => pose(b, z, base, '', f);
+    const strokes = markStrokes(cell, 'X', base);
+    const out = [pt(P(strokes[0][0], A))];
+    for (const st of strokes) {
+      const end = st[st.length - 1];
+      out.push(pt(P(st[0], T)), pt(P(st[0], 'draw')), pt(P(end, 'draw'), true), pt(P(end, T)));
+    }
+    const last = strokes[strokes.length - 1];
+    out.push(pt(P(last[last.length - 1], A)));
+    return out.filter((q, i) => !i || ['x', 'z', 'angel', 'paint_pov'].some((k) => q[k] !== out[i - 1][k]));
   }
 
   /** Ошибка позы или null */
@@ -367,12 +438,13 @@
         for (const p of drawPlan(cal, i, mark, false)) { err = checkPose(p); if (err) break; }
         if (err) break;
       }
+      const ce = checkChain(cal, i);
+      if (ce) err = 'цепочка: ' + ce;
       cells.push(err);
       if (err) list.push('Клетка ' + cellName(i) + ': ' + err);
       const f = cellFix(cal, i);
-      // позицию, выставленную вручную на вкладке «Позиции», не ограничиваем — её проверяет рабочая зона
-      const taught = cal.taught && cal.taught[i];
-      const over = taught ? [] : Object.keys(FIX_LIMITS).filter((k) => Math.abs(f[k]) > FIX_LIMITS[k]);
+      // у клетки с цепочкой поправка не используется
+      const over = chainOf(cal, i) ? [] : Object.keys(FIX_LIMITS).filter((k) => Math.abs(f[k]) > FIX_LIMITS[k]);
       if (over.length) {
         const names = { x: 'вылет', z: 'высота', a: 'база' };
         list.push('Клетка ' + cellName(i) + ': поправка ' + over.map((k) => names[k] + ' ' + f[k] + ' (предел ±' + FIX_LIMITS[k] + ')').join(', ') + ' — проверьте центр поля, шаг и высоту касания');
@@ -434,14 +506,15 @@
   const defaultCal = (side) => Object.assign({}, DEFAULT_CAL, {
     side: DEFAULT_SIDE[side],
     fix: Array.from({ length: 9 }, () => Object.assign({}, NO_FIX)),
-    taught: Array(9).fill(false), // клетка выставлена вручную на вкладке «Позиции»
+    chains: Array(9).fill(null), // цепочки точек клеток (вкладка «Позиции»); null — по расчёту
   });
 
   const api = {
     LINES, other, result, free, turnOf, minimax, bestMoves, winningMove, chooseMove, LEVELS,
     cellBoard, cellFix, FIX_LIMITS, boardToArm, armToBoard, armToPolar, polarToArm, markStrokes,
     drawPlan, cellPlan, park, checkPose, checkCalibration, cellName, DEFAULT_CAL,
-    DEFAULT_SIDE, defaultCal, heights, migrateCal, fixFromPose, tipToAxis, axisToTip, markerRadius,
+    DEFAULT_SIDE, defaultCal, heights, migrateCal, tipToAxis, axisToTip, markerRadius,
+    chainOf, chainPlan, checkChain, draftChain,
   };
   root.TTT = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

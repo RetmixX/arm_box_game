@@ -25,7 +25,7 @@ npm run serve     # http://localhost:8080 — страницы; без желе�
 | `web/assets/driver.js` | `RealDriver` (REST + WS), `DemoDriver` (симулятор), `Camera`, `request()` с понятными ошибками. Экспорт `window.Driver` |
 | `web/assets/joystick.js` | Экранные джойстики и Gamepad API (`window.Joy`) |
 | `web/assets/ttt.js` | Чистая логика игры: правила, минимакс, геометрия поле↔рука, план штрихов маркера. Экспорт `window.TTT` и `module.exports` |
-| `web/assets/game.js` | UI игры: две руки, общая очередь движений, лампы, камера, вкладки «Настройка» и «Позиции» (ручная постановка руки над клетками) |
+| `web/assets/game.js` | UI игры: две руки, общая очередь движений, лампы, камера, вкладки «Настройка» и «Позиции» (цепочки точек клеток: зависание → спуск → рисование → подъём) |
 | `web/assets/present.css`, `style.css`, `game.css` | Одна палитра «алюминий + сигнальный оранжевый», светлая и тёмная тема |
 
 Протокол backend, лампы и камеры — `docs/api.md`. Решения по игре — `docs/game.md`. Кинематика — `docs/ik.md`.

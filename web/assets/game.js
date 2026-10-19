@@ -185,7 +185,14 @@
     }
   }
 
-  const drawMark = (side, cell) => enqueue(() => runPlan(side, TTT.drawPlan(S.cal[side], cell, side), 'рисует ' + SIGN[side] + ' в ' + TTT.cellName(cell)));
+  /** План знака: цепочка клетки (вкладка «Позиции») или расчёт; битая цепочка — ошибка до движения */
+  function markPlan(side, cell, withPark) {
+    const ce = TTT.checkChain(S.cal[side], cell);
+    if (ce) throw new Error('Рука ' + SIGN[side] + ', цепочка клетки ' + TTT.cellName(cell) + ': ' + ce + '. Исправьте на вкладке «Позиции»');
+    return TTT.drawPlan(S.cal[side], cell, side, withPark);
+  }
+
+  const drawMark = (side, cell) => enqueue(() => runPlan(side, markPlan(side, cell, true), 'рисует ' + SIGN[side] + ' в ' + TTT.cellName(cell)));
 
   /* ================================ лампы ================================ */
 
@@ -1019,6 +1026,10 @@
       O: [TTT.drawPlan(cal, cell, 'O', false), 'рисует ○ в ' + TTT.cellName(cell)],
       park: [[TTT.park(cal)], 'на стоянку'],
     };
+    if ((kind === 'X' || kind === 'O') && TTT.checkChain(cal, cell)) {
+      $('#test-state').textContent = '✗ Цепочка клетки ' + TTT.cellName(cell) + ': ' + TTT.checkChain(cal, cell) + '. Исправьте на вкладке «Позиции».';
+      return;
+    }
     const [plan, title] = plans[kind];
     // «касание» повторно: маркер уже внизу — достаточно одной точки
     const run = kind === 'touch' && near && markerDown(side) ? plan.slice(-1) : plan;
@@ -1110,46 +1121,54 @@
     setFix(cell, f, key);
   }));
   $('#fix-reset').addEventListener('click', () => {
-    const cell = +$('#t-cell').value;
-    if (S.cal[S.edit].taught) S.cal[S.edit].taught[cell] = false;
-    setFix(cell, { x: 0, z: 0, a: 0 }, 'x');
+    setFix(+$('#t-cell').value, { x: 0, z: 0, a: 0 }, 'x');
   });
   $('#fix-reset-all').addEventListener('click', async () => {
     const side = S.edit;
     if (!(await ask('Обнулить поправки клеток руки ' + SIGN[side] + '?', 'Вылет, высота и база всех 9 клеток станут 0. Общая калибровка останется. Рука не двигается.', 'Обнулить'))) return;
     S.cal[side].fix = TTT.defaultCal(side).fix;
-    S.cal[side].taught = TTT.defaultCal(side).taught;
     save(); fillForm();
     $('#test-state').textContent = 'Рука ' + SIGN[side] + ': поправки всех клеток обнулены. Рука не двигалась.';
   });
 
-  /* ============================ позиции клеток ============================ */
+  /* ============================ цепочки точек клеток ============================ */
 
-  // Рука вручную ставится над каждой клеткой по очереди. pose — текущая команда касания в центре клетки
-  // (x, z касания, angel); пока маркер поднят, рука стоит над этой точкой на высоте проезда.
-  const teach = { cell: null, pose: null, down: false, zSet: false };
+  // Вкладка «Позиции». pose — где рука по нашим командам { x, z, angel, paint_pov }; кнопки двигают её
+  // одной командой, «+ Точка» записывает её в цепочку клетки (после выбранной точки или в конец).
+  const ch = { cell: null, pose: null, sel: -1, busy: false };
 
   const tCal = () => S.cal[S.edit];
-  const touchPose = (cal, cell) => TTT.cellPlan(cal, cell, true, false)[1];
+  const busyNow = () => testing || !!game.pending || !!active;
+  const curChain = () => (ch.cell === null ? null : TTT.chainOf(tCal(), ch.cell));
+  const travelZ = () => Math.round(TTT.heights(tCal()).travel);
+  const poseText = (p) => 'вылет ' + p.x + ' мм, высота ' + p.z + ' мм, база ' + p.angel + '°, paint_pov ' + p.paint_pov;
+  const PT_KEYS = ['x', 'z', 'angel', 'paint_pov'];
 
-  /** Команда руке для позы teach: над точкой (z проезда) или касание */
-  function teachStep(p, down, label) {
-    const cal = tCal();
+  /** Команда руке из точки */
+  function cmd(p, label) {
     return {
-      x: p.x, z: down ? p.z : p.z + Math.round(+cal.liftTravel), angel: p.angel,
-      pov_gripper: Math.round(+cal.pov), paint_pov: Math.round(+cal.paintPov), cell: teach.cell, label,
+      x: Math.round(+p.x), z: Math.round(+p.z), angel: Math.round(+p.angel),
+      pov_gripper: Math.round(+tCal().pov), paint_pov: Math.round(+p.paint_pov), cell: ch.cell, label,
     };
   }
 
-  /** Рука не над этой клеткой (например, на стоянке) — сначала подход сверху, как при рисовании */
-  function withApproach(plan, p) {
-    if (atCell(S.edit, teach.cell)) return plan;
-    const z = p.z + Math.round(+tCal().liftApproach);
-    return [Object.assign(teachStep(p, false, 'подход к клетке ' + TTT.cellName(teach.cell)), { z })].concat(plan);
+  /**
+   * Переезд в точку: низко над листом и надо вбок — сначала вверх до высоты проезда, над точкой — вниз.
+   * Из другой клетки или со стоянки подъём на высоту подхода добавит runPlan.
+   */
+  function gotoPlan(target, label) {
+    const last = arms[S.edit].last;
+    const T = travelZ();
+    const t = cmd(target, label);
+    const sideways = !last || last.x !== t.x || last.angel !== t.angel;
+    const plan = [];
+    if (sideways && last && last.cell === ch.cell && last.z < T) plan.push(cmd(Object.assign({}, last, { z: T }), 'вверх'));
+    if (sideways && t.z < T) plan.push(Object.assign({}, t, { z: T, label: 'над точкой' }));
+    plan.push(t);
+    return plan;
   }
 
-  /** Проверить позы и отправить; ошибка рабочей зоны — подсказка, рука не двигается */
-  function teachRun(plan, title) {
+  function chainRun(plan, title) {
     for (const p of plan) {
       const e = TTT.checkPose(p);
       if (e) { toast('Так нельзя: ' + e); return Promise.resolve(false); }
@@ -1157,147 +1176,215 @@
     return runTest(S.edit, plan, title);
   }
 
-  /** Перейти к клетке: рука подходит сверху и встаёт над её текущей позицией */
-  async function teachGo(cell) {
-    if (testing || game.pending || active) return;
-    if (!(cell >= 0 && cell <= 8)) return;
-    const side = S.edit;
-    teach.cell = cell;
-    teach.pose = touchPose(tCal(), cell);
-    teach.down = false;
-    teach.zSet = false;
-    renderTeach();
-    await teachRun(TTT.cellPlan(tCal(), cell, false, !atCell(side, cell)), 'над клеткой ' + TTT.cellName(cell));
-  }
-
-  /** Сдвиг: вылет (x, мм), база (a, °), касание (z, мм — опускает маркер) */
-  async function teachJog(key, d) {
-    if (testing || game.pending || active) return;
-    if (teach.cell === null) { toast('Сначала выберите клетку слева'); return; }
-    const prev = teach.pose;
-    const next = Object.assign({}, prev, key === 'x' ? { x: prev.x + d } : key === 'a' ? { angel: prev.angel + d } : { z: prev.z + d });
-    let plan;
-    if (key === 'z') plan = [teachStep(next, true, 'касание')];
-    // маркер внизу — поднять на месте, сдвинуться, опустить: по листу не тащим
-    else if (teach.down) plan = [teachStep(prev, false, 'маркер вверх'), teachStep(next, false, 'над клеткой'), teachStep(next, true, 'касание')];
-    else plan = [teachStep(next, false, 'над клеткой ' + TTT.cellName(teach.cell))];
-    plan = withApproach(plan, next);
-    for (const p of plan) {
-      const e = TTT.checkPose(p);
-      if (e) { toast('Так нельзя: ' + e); return; }
-    }
-    teach.pose = next;
-    if (key === 'z') { teach.down = true; teach.zSet = true; }
-    renderTeach();
-    await runTest(S.edit, plan, TTT.cellName(teach.cell) + ': вылет ' + next.x + ' мм, база ' + next.angel + '°' + (teach.down ? ', касание ' + next.z + ' мм' : ''));
-  }
-
-  async function teachToggleDown() {
-    if (testing || game.pending || active || teach.cell === null) return;
-    teach.down = !teach.down;
-    if (teach.down) teach.zSet = true;
-    renderTeach();
-    const step = teachStep(teach.pose, teach.down, teach.down ? 'касание' : 'маркер вверх');
-    const plan = teach.down ? withApproach([teachStep(teach.pose, false, 'над клеткой'), step], teach.pose) : withApproach([step], teach.pose);
-    await teachRun(atCell(S.edit, teach.cell) && teach.down ? [step] : plan, teach.down ? 'маркер опущен' : 'маркер поднят');
-  }
-
-  /** Запомнить позицию клетки (как поправку) и перейти к следующей незапомненной */
-  async function teachSave() {
-    if (testing || game.pending || active || teach.cell === null) return;
+  function setChain(pts) {
     const cal = tCal();
-    const cell = teach.cell;
-    const fix = Array.from({ length: 9 }, (_, i) => TTT.cellFix(cal, i));
-    fix[cell] = TTT.fixFromPose(cal, cell, teach.pose, teach.zSet);
-    cal.fix = fix;
-    cal.taught = Array.from({ length: 9 }, (_, i) => !!(cal.taught && cal.taught[i]));
-    cal.taught[cell] = true;
-    save(); fillForm(); renderTeach();
-    const note = teach.zSet ? '' : ' Касание не подбирали — высота клетки осталась прежней.';
-    const next = [1, 2, 3, 4, 5, 6, 7, 8].map((k) => (cell + k) % 9).find((i) => !cal.taught[i]);
-    if (next === undefined) {
-      if (teach.down) await teachToggleDown();
-      $('#teach-state').textContent = 'Рука ' + SIGN[S.edit] + ': ' + TTT.cellName(cell) + ' запомнена. Все 9 клеток выставлены.' + note;
+    cal.chains = Array.from({ length: 9 }, (_, i) => (cal.chains && cal.chains[i]) || null);
+    cal.chains[ch.cell] = pts && pts.length ? pts : null;
+    save(); renderChecks(); renderChain(); renderTeach();
+  }
+
+  /** Выбрать клетку: рука встаёт в первую точку цепочки (или над клеткой, если цепочки нет) */
+  async function chainSelect(cell) {
+    if (busyNow()) return;
+    ch.cell = cell;
+    ch.sel = -1;
+    const pts = curChain();
+    const first = pts ? pts[0] : TTT.draftChain(tCal(), cell, S.edit)[0];
+    ch.pose = { x: +first.x, z: +first.z, angel: +first.angel, paint_pov: +first.paint_pov };
+    renderChain(); renderTeach();
+    await chainRun(gotoPlan(ch.pose, pts ? 'точка 1' : 'над клеткой ' + TTT.cellName(cell)), (pts ? 'точка 1 цепочки ' : 'над клеткой ') + TTT.cellName(cell));
+  }
+
+  /** Ручной сдвиг одной командой: x / z (мм), a — база (°), p — paint_pov */
+  async function chainJog(key, d) {
+    if (busyNow()) return;
+    if (ch.cell === null) { toast('Сначала выберите клетку слева'); return; }
+    const k = { x: 'x', z: 'z', a: 'angel', p: 'paint_pov' }[key];
+    const next = Object.assign({}, ch.pose, { [k]: ch.pose[k] + d });
+    const step = cmd(next, TTT.cellName(ch.cell) + ': вручную');
+    const e = TTT.checkPose(step);
+    if (e) { toast('Так нельзя: ' + e); return; }
+    ch.pose = next;
+    renderTeach();
+    await runTest(S.edit, [step], poseText(next));
+  }
+
+  function chainAdd(line) {
+    if (busyNow() || ch.cell === null || !ch.pose) return;
+    const pts = (curChain() || []).slice();
+    const at = ch.sel >= 0 ? ch.sel + 1 : pts.length;
+    const p = Object.assign({}, ch.pose, { line: !!line && at > 0 });
+    pts.splice(at, 0, p);
+    ch.sel = at;
+    setChain(pts);
+    $('#teach-state').textContent = 'Точка ' + (at + 1) + ' записана: ' + poseText(p) + (p.line ? ', по прямой от предыдущей.' : '.');
+  }
+
+  function renderChain() {
+    const list = $('#chain');
+    const pts = curChain();
+    $('#chain-title').textContent = ch.cell === null ? 'Цепочка' : 'Цепочка ' + TTT.cellName(ch.cell) + (pts ? ' · ' + pts.length + ' точ.' : ' · нет, рисуется по расчёту');
+    if (!pts) {
+      list.innerHTML = '<li class="empty">' + (ch.cell === null ? 'Выберите клетку слева.' : 'Цепочки нет. Подведите руку и нажмите «+ Точка» или начните с «Черновика по расчёту».') + '</li>';
       return;
     }
-    await teachGo(next);
-    $('#teach-state').textContent = TTT.cellName(cell) + ' запомнена.' + note + ' Теперь ' + TTT.cellName(next) + '.';
+    const names = { x: 'Вылет', z: 'Высота', angel: 'База', paint_pov: 'paint_pov' };
+    const off = busyNow() ? ' disabled' : '';
+    list.innerHTML = pts.map((p, i) => {
+      const e = TTT.checkPose(cmd(p, ''));
+      return '<li data-i="' + i + '" class="' + (i === ch.sel ? 'sel' : '') + (e ? ' bad' : '') + '"' + (e ? ' title="' + esc(e) + '"' : '') + '>' +
+        '<span class="n">' + (i + 1) + '</span>' +
+        PT_KEYS.map((k) => '<input class="input mono" data-ck="' + k + '" value="' + esc(p[k]) + '" inputmode="numeric" aria-label="' + names[k] + ', точка ' + (i + 1) + '"' + off + '>').join('') +
+        '<label class="ln" title="Идти к точке по прямой от предыдущей"><input type="checkbox" data-line' + (p.line ? ' checked' : '') + (i && !off ? '' : ' disabled') + '>прямо</label>' +
+        '<span class="acts">' +
+          '<button data-act="go" title="Ехать в точку"' + off + '>⌖</button>' +
+          '<button data-act="set" title="Записать сюда текущее положение руки"' + off + '>✎</button>' +
+          '<button data-act="up" title="Выше в списке"' + (i && !off ? '' : ' disabled') + '>↑</button>' +
+          '<button data-act="down" title="Ниже в списке"' + (i < pts.length - 1 && !off ? '' : ' disabled') + '>↓</button>' +
+          '<button data-act="del" title="Удалить точку"' + off + '>×</button>' +
+        '</span></li>';
+    }).join('');
   }
 
   function renderTeach() {
     const cal = tCal();
-    const busy = testing || !!game.pending || !!active;
+    const busy = busyNow();
     $$('#teach-side button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.v === S.edit)));
     const grid = $('#teach-cells');
     if (!grid.children.length) {
       grid.innerHTML = Array.from({ length: 9 }, (_, i) => '<button data-cell="' + i + '" role="gridcell"><span class="nm">' + TTT.cellName(i) + '</span><span class="st"></span></button>').join('');
     }
+    let n = 0;
     $$('#teach-cells button').forEach((b) => {
       const i = +b.dataset.cell;
-      const f = TTT.cellFix(cal, i);
-      const done = !!(cal.taught && cal.taught[i]);
-      b.classList.toggle('ok', done);
-      b.classList.toggle('cur', i === teach.cell);
+      const pts = TTT.chainOf(cal, i);
+      const err = pts && TTT.checkChain(cal, i);
+      if (pts) n++;
+      b.classList.toggle('ok', !!pts && !err);
+      b.classList.toggle('bad', !!err);
+      b.classList.toggle('cur', i === ch.cell);
       b.disabled = busy;
-      b.querySelector('.st').textContent = done ? '✓ запомнена' : f.x || f.z || f.a ? 'есть поправка' : 'по расчёту';
+      b.title = err ? 'Цепочка: ' + err : '';
+      b.querySelector('.st').textContent = err ? '✗ цепочка' : pts ? '✓ ' + pts.length + ' точ.' : 'по расчёту';
     });
-    const n = cal.taught ? cal.taught.filter(Boolean).length : 0;
-    $('#teach-progress').textContent = 'Рука ' + SIGN[S.edit] + ': выставлено ' + n + ' из 9 клеток.' + (n < 9 ? ' Остальные рисуются по расчёту (центр поля и шаг клетки).' : '');
-    const p = teach.pose;
-    $('#tn-cell').textContent = teach.cell === null ? '—' : TTT.cellName(teach.cell);
+    $('#teach-progress').textContent = 'Рука ' + SIGN[S.edit] + ' рисует ' + SIGN[S.edit] + ': цепочки у ' + n + ' из 9 клеток.' + (n < 9 ? ' Остальные рисуются по расчёту (центр поля, шаг клетки, поправки).' : '');
+    const p = ch.pose;
+    $('#tn-cell').textContent = ch.cell === null ? '—' : TTT.cellName(ch.cell);
     $('#tn-x').textContent = p ? p.x : '—';
-    $('#tn-z').textContent = p ? (teach.down ? p.z : p.z + Math.round(+cal.liftTravel)) : '—';
+    $('#tn-z').textContent = p ? p.z : '—';
     $('#tn-a').textContent = p ? p.angel : '—';
-    if (p) {
-      const m = touchPose(Object.assign({}, cal, { fix: [] }), teach.cell);
-      const sg = (v) => (v > 0 ? '+' : v < 0 ? '−' : '±') + Math.abs(v);
-      $('#tn-delta').textContent = 'От расчёта: вылет ' + sg(p.x - m.x) + ' мм, база ' + sg(p.angel - m.angel) + '°, касание ' + sg(p.z - m.z) + ' мм · маркер ' + (teach.down ? 'опущен, высота — касание' : 'поднят, высота — проезд');
-    } else $('#tn-delta').textContent = '';
-    const down = $('#teach-down');
-    down.setAttribute('aria-pressed', String(teach.down));
-    down.textContent = teach.down ? 'Поднять маркер' : 'Опустить маркер';
-    const none = teach.cell === null;
-    $$('[data-tj], #teach-down, #teach-save').forEach((b) => { b.disabled = busy || none; });
-    $('#teach-prev').disabled = busy || none || teach.cell === 0;
-    $('#teach-next').disabled = busy || none || teach.cell === 8;
-    $('#teach-reset').disabled = busy || none;
-    $('#teach-reset').textContent = none ? 'клетку' : 'клетку ' + TTT.cellName(teach.cell);
+    $('#tn-p').textContent = p ? p.paint_pov : '—';
+    const T = travelZ(), D = Math.round(+cal.zDraw);
+    $('#tn-note').textContent = p ? 'Касание листа — z ≈ ' + D + ', проезд — ' + T + ', подход — ' + Math.round(TTT.heights(cal).approach) + ' мм.' + (p.z < T ? ' Сейчас ниже проезда: сдвиг вбок рисует по листу.' : '') : '';
+    const none = ch.cell === null;
+    $$('[data-tj], #chain-add, #chain-add-line, #chain-draft').forEach((b) => { b.disabled = busy || none; });
+    $('#chain-play').disabled = busy || !curChain();
+    $('#chain-clear').disabled = busy || !curChain();
+    $('#chain-clear-all').disabled = busy || !n;
+    // пока рука едет, список точек заблокирован; закончила — перерисовать его разблокированным
+    if (busy !== ch.busy) { ch.busy = busy; renderChain(); }
   }
 
-  $('#teach-cells').addEventListener('click', (e) => { const b = e.target.closest('button[data-cell]'); if (b) teachGo(+b.dataset.cell); });
+  $('#teach-cells').addEventListener('click', (e) => { const b = e.target.closest('button[data-cell]'); if (b) chainSelect(+b.dataset.cell); });
   $('#teach-side').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-v]');
-    if (!b || b.dataset.v === S.edit || testing || active) return;
+    if (!b || b.dataset.v === S.edit || busyNow()) return;
     S.edit = b.dataset.v;
     save();
-    Object.assign(teach, { cell: null, pose: null, down: false, zSet: false });
-    fillForm(); renderTeach();
+    Object.assign(ch, { cell: null, pose: null, sel: -1 });
+    fillForm(); renderChain(); renderTeach();
   });
-  $$('[data-tj]').forEach((b) => b.addEventListener('click', () => { const [k, d] = b.dataset.tj.split(':'); teachJog(k, +d); }));
-  $('#teach-down').addEventListener('click', teachToggleDown);
-  $('#teach-save').addEventListener('click', teachSave);
-  $('#teach-prev').addEventListener('click', () => teachGo(teach.cell - 1));
-  $('#teach-next').addEventListener('click', () => teachGo(teach.cell + 1));
-  $('#teach-reset').addEventListener('click', async () => {
-    if (testing || game.pending || active || teach.cell === null) return;
-    const cal = tCal(), cell = teach.cell;
-    const fix = Array.from({ length: 9 }, (_, i) => TTT.cellFix(cal, i));
-    fix[cell] = { x: 0, z: 0, a: 0 };
-    cal.fix = fix;
-    if (cal.taught) cal.taught[cell] = false;
-    save(); fillForm();
-    if (teach.down) await teachToggleDown();
-    await teachGo(cell);
+  $$('[data-tj]').forEach((b) => b.addEventListener('click', () => { const [k, d] = b.dataset.tj.split(':'); chainJog(k, +d); }));
+  $('#chain-add').addEventListener('click', () => chainAdd(false));
+  $('#chain-add-line').addEventListener('click', () => chainAdd(true));
+
+  $('#chain-play').addEventListener('click', async () => {
+    if (busyNow() || !curChain()) return;
+    const cal = tCal(), cell = ch.cell;
+    const e = TTT.checkChain(cal, cell);
+    if (e) { $('#teach-state').textContent = '✗ Цепочка ' + TTT.cellName(cell) + ': ' + e; return; }
+    const pts = curChain();
+    const last = pts[pts.length - 1];
+    ch.pose = { x: +last.x, z: +last.z, angel: +last.angel, paint_pov: +last.paint_pov };
+    ch.sel = pts.length - 1;
+    renderChain(); renderTeach();
+    await runTest(S.edit, TTT.chainPlan(cal, cell, false), 'цепочка ' + TTT.cellName(cell) + ' пройдена');
   });
-  $('#teach-reset-all').addEventListener('click', async () => {
+
+  $('#chain-draft').addEventListener('click', async () => {
+    if (busyNow() || ch.cell === null) return;
+    if (curChain() && !(await ask('Заменить цепочку ' + TTT.cellName(ch.cell) + '?', 'Точки цепочки заменятся черновиком из текущей калибровки (центр поля, шаг клетки, высоты, поправка клетки). Рука не двигается.', 'Заменить'))) return;
+    ch.sel = -1;
+    setChain(TTT.draftChain(tCal(), ch.cell, S.edit));
+    $('#teach-state').textContent = 'Черновик ' + SIGN[S.edit] + ' для ' + TTT.cellName(ch.cell) + ': ' + curChain().length + ' точек. Проверьте точки — «⌖» ведёт руку в точку, «✎» записывает в неё текущее положение — и нажмите «▶ Проиграть».';
+  });
+
+  $('#chain-clear').addEventListener('click', async () => {
+    if (busyNow() || !curChain()) return;
+    if (!(await ask('Очистить цепочку ' + TTT.cellName(ch.cell) + '?', 'Клетка будет рисоваться по расчёту. Рука не двигается.', 'Очистить'))) return;
+    ch.sel = -1;
+    setChain(null);
+    $('#teach-state').textContent = 'Цепочка ' + TTT.cellName(ch.cell) + ' очищена — клетка рисуется по расчёту.';
+  });
+
+  $('#chain-clear-all').addEventListener('click', async () => {
     const side = S.edit;
-    if (!(await ask('Сбросить позиции клеток руки ' + SIGN[side] + '?', 'Все 9 клеток вернутся к расчётным позициям (центр поля и шаг клетки), поправки клеток обнулятся. Рука не двигается.', 'Сбросить позиции'))) return;
-    S.cal[side].fix = TTT.defaultCal(side).fix;
-    S.cal[side].taught = TTT.defaultCal(side).taught;
-    Object.assign(teach, { cell: null, pose: null, down: false, zSet: false });
-    save(); fillForm(); renderTeach();
-    $('#teach-state').textContent = 'Рука ' + SIGN[side] + ': позиции всех клеток сброшены к расчётным. Рука не двигалась.';
+    if (busyNow() || !(await ask('Удалить все цепочки руки ' + SIGN[side] + '?', 'Все 9 клеток будут рисоваться по расчёту. Рука не двигается.', 'Удалить все'))) return;
+    S.cal[side].chains = TTT.defaultCal(side).chains;
+    ch.sel = -1;
+    save(); renderChecks(); renderChain(); renderTeach();
+    $('#teach-state').textContent = 'Рука ' + SIGN[side] + ': все цепочки удалены.';
   });
+
+  // список точек: выбор строки, правка чисел, «по прямой», действия
+  $('#chain').addEventListener('click', async (e) => {
+    const li = e.target.closest('li[data-i]');
+    if (!li || busyNow()) return;
+    const i = +li.dataset.i;
+    const b = e.target.closest('button[data-act]');
+    const pts = curChain().slice();
+    if (!b) {
+      if (e.target.closest('input')) return;
+      ch.sel = ch.sel === i ? -1 : i;
+      renderChain();
+      return;
+    }
+    const act = b.dataset.act;
+    if (act === 'go') {
+      const p = pts[i];
+      ch.pose = { x: +p.x, z: +p.z, angel: +p.angel, paint_pov: +p.paint_pov };
+      ch.sel = i;
+      renderChain(); renderTeach();
+      await chainRun(gotoPlan(ch.pose, 'точка ' + (i + 1)), 'точка ' + (i + 1) + ' цепочки ' + TTT.cellName(ch.cell));
+      return;
+    }
+    if (act === 'set') {
+      pts[i] = Object.assign({}, ch.pose, { line: !!pts[i].line && i > 0 });
+      $('#teach-state').textContent = 'Точка ' + (i + 1) + ' перезаписана: ' + poseText(pts[i]) + '.';
+    }
+    if (act === 'up' && i > 0) { [pts[i - 1], pts[i]] = [pts[i], pts[i - 1]]; ch.sel = i - 1; }
+    if (act === 'down' && i < pts.length - 1) { [pts[i + 1], pts[i]] = [pts[i], pts[i + 1]]; ch.sel = i + 1; }
+    if (act === 'del') { pts.splice(i, 1); ch.sel = Math.min(i, pts.length - 1); }
+    if (pts.length) pts[0] = Object.assign({}, pts[0], { line: false }); // к первой точке «по прямой» не бывает
+    setChain(pts);
+  });
+  $('#chain').addEventListener('change', (e) => {
+    const li = e.target.closest('li[data-i]');
+    if (!li) return;
+    const i = +li.dataset.i;
+    const pts = curChain().slice();
+    if (e.target.matches('[data-line]')) {
+      pts[i] = Object.assign({}, pts[i], { line: e.target.checked });
+      setChain(pts);
+      return;
+    }
+    const k = e.target.dataset.ck;
+    const v = Number(String(e.target.value).replace(',', '.'));
+    if (!k || !Number.isFinite(v)) { e.target.value = pts[i][k]; toast('Нужно число'); return; }
+    pts[i] = Object.assign({}, pts[i], { [k]: Math.round(v) });
+    setChain(pts);
+  });
+  $('#chain').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.matches('input[data-ck]')) e.target.blur(); });
 
   document.addEventListener('keydown', (e) => {
     if (S.page !== 'teach' || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -1306,10 +1393,11 @@
     if (tag === 'BUTTON' && (e.key === 'Enter' || e.key === ' ')) return; // на кнопке — нажимается сама кнопка
     const m = e.shiftKey;
     const keys = {
-      ArrowUp: () => teachJog('x', m ? 10 : 1), ArrowDown: () => teachJog('x', m ? -10 : -1),
-      ArrowLeft: () => teachJog('a', m ? 5 : 1), ArrowRight: () => teachJog('a', m ? -5 : -1),
-      PageUp: () => teachJog('z', 1), PageDown: () => teachJog('z', -1),
-      ' ': teachToggleDown, Enter: teachSave,
+      ArrowUp: () => chainJog('x', m ? 10 : 1), ArrowDown: () => chainJog('x', m ? -10 : -1),
+      ArrowLeft: () => chainJog('a', m ? 5 : 1), ArrowRight: () => chainJog('a', m ? -5 : -1),
+      PageUp: () => chainJog('z', m ? 10 : 1), PageDown: () => chainJog('z', m ? -10 : -1),
+      ']': () => chainJog('p', 1), '[': () => chainJog('p', -1), '}': () => chainJog('p', 10), '{': () => chainJog('p', -10),
+      Enter: () => chainAdd(m),
     };
     if (!keys[e.key]) return;
     e.preventDefault();
@@ -1357,7 +1445,7 @@
     clearInterval(cam.timer);
     if (page === 'play') { refreshCam(); cam.timer = setInterval(refreshCam, 5000); }
     else { hideStream(); fillForm(); renderCam(); }
-    if (page === 'teach') renderTeach();
+    if (page === 'teach') { renderChain(); renderTeach(); }
     dirty = true;
   }
   $('#tabs').addEventListener('click', (e) => { const b = e.target.closest('button[data-page]'); if (b) setPage(b.dataset.page); });
