@@ -210,3 +210,23 @@ test('смещение маркера: не задано — в «todo», кру
   assert.ok(T.checkCalibration({ ...T.defaultCal('X'), markerA: 25 }).list.some((t) => /не помещается в клетку/.test(t)));
   assert.ok(T.checkCalibration({ ...T.defaultCal('X'), markerA: 10, paintFrom: 160 }).list.some((t) => /«влево до» < «середина»/.test(t)));
 });
+
+test('позиция клетки, выставленная вручную, становится точкой касания этой клетки', () => {
+  const cal = { ...T.defaultCal('X'), markerA: 10 };
+  const taught = { x: 233, z: 57, angel: 171 }; // рука вручную поставлена над В1 и опущена до касания
+  cal.fix[8] = T.fixFromPose(cal, 8, taught, true);
+  cal.taught[8] = true;
+  const [, touch] = T.cellPlan(cal, 8, true, false);
+  assert.deepEqual([touch.x, touch.z, touch.angel], [233, 57, 171]);
+  // знак рисуется вокруг этой точки: высота касания и сдвиг те же для всех штрихов
+  for (const p of T.drawPlan(cal, 8, 'X', false)) if (/рисует|маркер вниз/.test(p.label)) assert.equal(p.z, 57, p.label);
+  // большая ручная поправка — не ошибка калибровки (её держит рабочая зона), чужие клетки не тронуты
+  cal.fix[0] = T.fixFromPose(cal, 0, { ...T.cellPlan(cal, 0, true, false)[1], x: T.cellPlan(cal, 0, true, false)[1].x + 30 }, false);
+  assert.ok(T.checkCalibration(cal).list.some((t) => /А3: поправка/.test(t)), 'не выставленная вручную — с пределом');
+  cal.taught[0] = true;
+  assert.ok(!T.checkCalibration(cal).list.some((t) => /поправка/.test(t)));
+  assert.deepEqual(T.cellPlan(cal, 4, true, false), T.cellPlan({ ...cal, fix: [] }, 4, true, false));
+  // маркер не опускали — высоту клетки не трогаем
+  const keepZ = T.fixFromPose({ ...cal }, 8, { x: 230, z: 999, angel: 170 }, false);
+  assert.equal(keepZ.z, cal.fix[8].z);
+});

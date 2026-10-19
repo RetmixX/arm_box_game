@@ -323,6 +323,17 @@
     return list;
   }
 
+  /**
+   * Позиция клетки, выставленная вручную (вкладка «Позиции»), → поправка клетки.
+   * p — команда касания в центре клетки { x, z, angel }; withZ = false — высоту касания не трогать
+   * (маркер не опускали). Дальше все планы клетки строятся от этой позиции.
+   */
+  function fixFromPose(cal, cell, p, withZ) {
+    const m = cellPlan(Object.assign({}, cal, { fix: [] }), cell, true, false)[1];
+    const old = cellFix(cal, cell);
+    return { x: p.x - m.x, z: withZ ? p.z - m.z : old.z, a: p.angel - m.angel };
+  }
+
   /** Ошибка позы или null */
   function checkPose(p) {
     const names = { x: 'вылет', z: 'высота', angel: 'угол базы', pov_gripper: 'поворот схвата', paint_pov: 'paint_pov' };
@@ -359,7 +370,9 @@
       cells.push(err);
       if (err) list.push('Клетка ' + cellName(i) + ': ' + err);
       const f = cellFix(cal, i);
-      const over = Object.keys(FIX_LIMITS).filter((k) => Math.abs(f[k]) > FIX_LIMITS[k]);
+      // позицию, выставленную вручную на вкладке «Позиции», не ограничиваем — её проверяет рабочая зона
+      const taught = cal.taught && cal.taught[i];
+      const over = taught ? [] : Object.keys(FIX_LIMITS).filter((k) => Math.abs(f[k]) > FIX_LIMITS[k]);
       if (over.length) {
         const names = { x: 'вылет', z: 'высота', a: 'база' };
         list.push('Клетка ' + cellName(i) + ': поправка ' + over.map((k) => names[k] + ' ' + f[k] + ' (предел ±' + FIX_LIMITS[k] + ')').join(', ') + ' — проверьте центр поля, шаг и высоту касания');
@@ -418,13 +431,17 @@
   }
 
   /** Копия калибровки по умолчанию для руки side ('X' | 'O'); поправки клеток — свой массив на каждую копию */
-  const defaultCal = (side) => Object.assign({}, DEFAULT_CAL, { side: DEFAULT_SIDE[side], fix: Array.from({ length: 9 }, () => Object.assign({}, NO_FIX)) });
+  const defaultCal = (side) => Object.assign({}, DEFAULT_CAL, {
+    side: DEFAULT_SIDE[side],
+    fix: Array.from({ length: 9 }, () => Object.assign({}, NO_FIX)),
+    taught: Array(9).fill(false), // клетка выставлена вручную на вкладке «Позиции»
+  });
 
   const api = {
     LINES, other, result, free, turnOf, minimax, bestMoves, winningMove, chooseMove, LEVELS,
     cellBoard, cellFix, FIX_LIMITS, boardToArm, armToBoard, armToPolar, polarToArm, markStrokes,
     drawPlan, cellPlan, park, checkPose, checkCalibration, cellName, DEFAULT_CAL,
-    DEFAULT_SIDE, defaultCal, heights, migrateCal, tipToAxis, axisToTip, markerRadius,
+    DEFAULT_SIDE, defaultCal, heights, migrateCal, fixFromPose, tipToAxis, axisToTip, markerRadius,
   };
   root.TTT = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

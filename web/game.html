@@ -15,6 +15,7 @@
     <nav class="seg tabs" id="tabs" role="tablist" aria-label="Разделы">
       <button role="tab" data-page="play" aria-selected="true">Игра</button>
       <button role="tab" data-page="setup" aria-selected="false">Настройка</button>
+      <button role="tab" data-page="teach" aria-selected="false">Позиции</button>
     </nav>
 
     <div class="bar-right">
@@ -296,6 +297,68 @@
           </label>
         </fieldset>
       </div>
+    </section>
+  </main>
+
+  <!-- ========================== ПОЗИЦИИ ========================== -->
+  <!-- Рука вручную ставится над каждой клеткой по очереди; позиция запоминается как поправка клетки -->
+  <main class="teach" id="page-teach" hidden>
+    <section class="card teach-view">
+      <div class="card-head">
+        <h2>Позиции клеток</h2>
+        <div class="seg sm" id="teach-side" role="tablist" aria-label="Какую руку ставим">
+          <button data-v="X" role="tab">Рука ✕</button><button data-v="O" role="tab">Рука ○</button>
+        </div>
+      </div>
+      <div class="teach-grid" id="teach-cells" role="grid" aria-label="Клетки: нажмите, чтобы поставить руку"></div>
+      <p class="hint" id="teach-progress"></p>
+    </section>
+
+    <section class="card teach-form">
+      <div class="teach-now">
+        <div><span class="hint">Клетка</span><b id="tn-cell">—</b></div>
+        <div><span class="hint">Вылет</span><b id="tn-x">—</b><small>мм</small></div>
+        <div><span class="hint">Высота</span><b id="tn-z">—</b><small>мм</small></div>
+        <div><span class="hint">База</span><b id="tn-a">—</b><small>°</small></div>
+      </div>
+      <p class="hint" id="tn-delta"></p>
+
+      <div class="teach-jog">
+        <span class="hint">Вылет</span>
+        <div class="row tight">
+          <button class="btn sm ghost" data-tj="x:-10" title="Ближе к базе на 10 мм">−10</button>
+          <button class="btn sm ghost" data-tj="x:-1" title="Ближе к базе на 1 мм (↓)">−1</button>
+          <button class="btn sm ghost" data-tj="x:1" title="Дальше от базы на 1 мм (↑)">+1</button>
+          <button class="btn sm ghost" data-tj="x:10" title="Дальше от базы на 10 мм">+10</button>
+        </div>
+        <span class="hint">База</span>
+        <div class="row tight">
+          <button class="btn sm ghost" data-tj="a:5" title="Влево на 5°">↺ 5°</button>
+          <button class="btn sm ghost" data-tj="a:1" title="Влево на 1° (←)">↺ 1°</button>
+          <button class="btn sm ghost" data-tj="a:-1" title="Вправо на 1° (→)">1° ↻</button>
+          <button class="btn sm ghost" data-tj="a:-5" title="Вправо на 5°">5° ↻</button>
+        </div>
+        <span class="hint">Касание</span>
+        <div class="row tight">
+          <button class="btn sm ghost" data-tj="z:-1" title="Маркер ниже на 1 мм (PgDn)">ниже 1</button>
+          <button class="btn sm ghost" data-tj="z:1" title="Маркер выше на 1 мм (PgUp)">выше 1</button>
+          <button class="btn sm" id="teach-down" title="Опустить / поднять маркер (пробел)">Опустить маркер</button>
+        </div>
+      </div>
+
+      <div class="row wrap">
+        <button class="btn sm ghost" id="teach-prev">← Предыдущая</button>
+        <button class="btn sm signal" id="teach-save" title="Enter">Запомнить и дальше →</button>
+        <button class="btn sm ghost" id="teach-next">Следующая →</button>
+      </div>
+      <p class="hint" id="teach-state">Нажмите клетку слева — рука встанет над ней на высоте проезда (подходит сверху). Двигайте кнопками, пока кончик маркера не окажется над центром клетки, опустите маркер, подберите касание и нажмите «Запомнить».</p>
+      <div class="row wrap">
+        <span class="hint">Сбросить</span>
+        <button class="btn sm ghost" id="teach-reset" title="Вернуть клетку к расчётной позиции">клетку</button>
+        <button class="btn sm ghost danger" id="teach-reset-all">все позиции руки</button>
+        <button class="btn sm ghost right" data-test="park">На стоянку</button>
+      </div>
+      <p class="hint">Клавиши: ↑ ↓ — вылет, ← → — база, PgUp / PgDn — касание, пробел — маркер, Enter — запомнить; с Shift шаг больше.</p>
     </section>
   </main>
 
