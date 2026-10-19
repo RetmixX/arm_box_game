@@ -63,3 +63,38 @@ test('план рисования: маркер опускается на выс
   assert.equal(plan[plan.length - 1].label, 'на стоянку');
   for (const p of plan) assert.equal(T.checkPose(p), null, p.label);
 });
+
+test('поправка клетки сдвигает и наведение, и знак; остальные клетки не трогает', () => {
+  const base = T.defaultCal('X');
+  const cal = T.defaultCal('X');
+  cal.fix[0] = [4, -3];
+  const c0 = T.cellBoard(0, cal.pitch);
+  assert.deepEqual(T.cellCenter(cal, 0), { bx: c0.bx + 4, by: c0.by - 3 });
+  // наведение: та же поза, что у поля, сдвинутого на поправку
+  const moved = T.cellPlan(cal, 0, false)[0];
+  const a = T.boardToArm(c0.bx + 4, c0.by - 3, cal);
+  const p = T.armToPolar(a.u, a.v);
+  assert.equal(moved.x, Math.round(p.x));
+  assert.equal(moved.angel, Math.round(p.angel));
+  // знак: центр окружности уехал ровно на поправку
+  const ring = (c) => { const pts = T.markStrokes(0, 'O', c)[0]; return pts.reduce((s, q) => ({ bx: s.bx + q.bx / pts.length, by: s.by + q.by / pts.length }), { bx: 0, by: 0 }); };
+  const r0 = ring(base), r1 = ring(cal);
+  assert.ok(Math.abs(r1.bx - r0.bx - 4) < 0.5 && Math.abs(r1.by - r0.by + 3) < 0.5);
+  assert.deepEqual(T.cellPlan(cal, 4, true), T.cellPlan(base, 4, true));
+});
+
+test('у каждой копии калибровки свои поправки; старые настройки без fix работают', () => {
+  const a = T.defaultCal('X'), b = T.defaultCal('X');
+  a.fix[4] = [2, 2];
+  assert.deepEqual(b.fix[4], [0, 0]);
+  assert.deepEqual(T.defaultCal('O').fix[4], [0, 0]);
+  const old = { ...T.DEFAULT_CAL, side: 90 }; // сохранено до появления поправок
+  assert.deepEqual(T.cellFix(old, 4), [0, 0]);
+  assert.deepEqual(T.checkCalibration(old).list, []);
+});
+
+test('слишком большая поправка клетки — в списке проблем калибровки', () => {
+  const cal = T.defaultCal('X');
+  cal.fix[8] = [0, 25]; // при шаге 50 предел 20 мм
+  assert.ok(T.checkCalibration(cal).list.some((t) => /В1: поправка/.test(t)), T.checkCalibration(cal).list.join('\n'));
+});

@@ -615,7 +615,7 @@
     if (setup) {
       const chk = TTT.checkCalibration(S.cal[edit]).cells;
       for (let i = 0; i < 9; i++) {
-        const c = TTT.cellBoard(i, pitch);
+        const c = TTT.cellCenter(S.cal[edit], i); // с поправкой клетки
         g.fillStyle = chk[i] ? C.bad : C.signal;
         g.globalAlpha = chk[i] ? 0.25 : 1;
         if (chk[i]) g.fillRect(X(c.bx - pitch / 2) + 1, Y(c.by + pitch / 2) + 1, pitch * s - 2, pitch * s - 2);
@@ -788,7 +788,7 @@
   let testing = false;
 
   function renderTestState() {
-    $$('[data-test]').forEach((b) => { b.disabled = testing || !!game.pending || !!active; });
+    $$('[data-test], [data-fix], #fix-reset').forEach((b) => { b.disabled = testing || !!game.pending || !!active; });
     const el = $('#test-state');
     if (testing && active) el.textContent = 'Рука ' + SIGN[active.side] + ': ' + active.label + '…';
   }
@@ -807,6 +807,7 @@
     });
     $$('#cal-side button').forEach((b) => b.setAttribute('aria-checked', String(+b.dataset.v === +cal.side)));
     $$('#cal-grip button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.v === String(!!cal.grip))));
+    renderFix();
     renderChecks();
   }
 
@@ -912,7 +913,7 @@
   });
 
   $('#t-cell').innerHTML = Array.from({ length: 9 }, (_, i) => '<option value="' + i + '"' + (i === 4 ? ' selected' : '') + '>Клетка ' + TTT.cellName(i) + '</option>').join('');
-  $('#t-cell').addEventListener('change', () => { dirty = true; });
+  $('#t-cell').addEventListener('change', () => { renderFix(); dirty = true; });
 
   async function test(kind) {
     if (testing || game.pending || active) return;
@@ -933,20 +934,87 @@
     };
     const [plan, title] = plans[kind];
     // «касание» повторно: маркер уже внизу — достаточно одной точки
-    const run = kind === 'touch' && arms[side].last && arms[side].last.label === 'касание' ? plan.slice(1) : plan;
+    const run = kind === 'touch' && markerDown(side) ? plan.slice(1) : plan;
+    await runTest(side, run, title, kind === 'touch' ? ' Маркер должен едва касаться листа; если нет — −1 / +1.' : '');
+  }
+  $$('[data-test]').forEach((b) => b.addEventListener('click', () => test(b.dataset.test)));
+
+  const markerDown = (side) => !!(arms[side].last && arms[side].last.label === 'касание');
+
+  async function runTest(side, plan, title, note) {
     testing = true;
     render();
     try {
-      await enqueue(() => runPlan(side, run, title));
-      $('#test-state').textContent = 'Рука ' + SIGN[side] + ': ' + title + ' — готово.' + (kind === 'touch' ? ' Маркер должен едва касаться листа; если нет — −1 / +1.' : '');
+      await enqueue(() => runPlan(side, plan, title));
+      $('#test-state').textContent = 'Рука ' + SIGN[side] + ': ' + title + ' — готово.' + (note || '');
+      return true;
     } catch (e) {
       $('#test-state').textContent = '✗ ' + e.message;
+      return false;
     } finally {
       testing = false;
       render();
     }
   }
-  $$('[data-test]').forEach((b) => b.addEventListener('click', () => test(b.dataset.test)));
+
+  /* --------------------- точная поправка клетки --------------------- */
+
+  const FIX_DIR = { left: [-1, 0], right: [1, 0], up: [0, 1], down: [0, -1] };
+
+  function fixText(cal, cell) {
+    const [dx, dy] = TTT.cellFix(cal, cell);
+    if (!dx && !dy) return TTT.cellName(cell) + ': без поправки';
+    const part = (v, plus, minus) => (v ? (v > 0 ? plus : minus) + ' ' + Math.abs(v) : '');
+    return TTT.cellName(cell) + ': ' + [part(dx, 'вправо', 'влево'), part(dy, 'вверх', 'вниз')].filter(Boolean).join(', ') + ' мм';
+  }
+
+  function renderFix() {
+    const cal = S.cal[S.edit];
+    const cell = +$('#t-cell').value;
+    $('#fix-state').textContent = fixText(cal, cell);
+    const [dx, dy] = TTT.cellFix(cal, cell);
+    $('#fix-reset').hidden = !dx && !dy;
+  }
+
+  /** Сдвинуть центр клетки на листе и сразу поставить руку над новой точкой */
+  async function setFix(cell, next) {
+    if (testing || game.pending || active) return;
+    const side = S.edit;
+    const cal = S.cal[side];
+    const lim = Math.floor(TTT.FIX_MAX * +cal.pitch);
+    if (Math.max(Math.abs(next[0]), Math.abs(next[1])) > lim) {
+      toast('Поправка клетки — не больше ' + lim + ' мм. Если нужно больше, поправьте центр поля или шаг клетки');
+      return;
+    }
+    const down = markerDown(side);
+    const before = TTT.cellPlan(cal, cell, false)[0];
+    const fix = Array.from({ length: 9 }, (_, i) => TTT.cellFix(cal, i));
+    fix[cell] = next;
+    const trial = Object.assign({}, cal, { fix });
+    // маркер внизу — сначала поднять на месте, чтобы не чиркнуть по листу
+    const plan = (down ? [Object.assign({}, arms[side].last, { z: Math.round(+cal.zTravel), label: 'маркер вверх' })] : [])
+      .concat(TTT.cellPlan(trial, cell, down));
+    for (const p of plan) {
+      const e = TTT.checkPose(p);
+      if (e) { toast('Так сдвинуть нельзя: ' + e); return; }
+    }
+    cal.fix = fix;
+    save(); renderFix(); renderChecks();
+    const over = plan[down ? 1 : 0];
+    const same = over.x === before.x && over.angel === before.angel;
+    await runTest(side, plan, fixText(cal, cell),
+      ' Команда: x ' + over.x + ' мм, угол ' + over.angel + '°.' +
+      (same ? ' Команда не изменилась: угол и вылет передаются целыми, сдвиг меньше шага руки — нажмите ещё раз.' : ''));
+  }
+
+  $$('[data-fix]').forEach((b) => b.addEventListener('click', (e) => {
+    const cell = +$('#t-cell').value;
+    const [dx, dy] = TTT.cellFix(S.cal[S.edit], cell);
+    const [kx, ky] = FIX_DIR[b.dataset.fix];
+    const m = e.shiftKey ? 5 : 1;
+    setFix(cell, [dx + kx * m, dy + ky * m]);
+  }));
+  $('#fix-reset').addEventListener('click', () => setFix(+$('#t-cell').value, [0, 0]));
 
   // перенос настроек на вторую вебку
   $('#cfg-save').addEventListener('click', () => {

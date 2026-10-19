@@ -238,12 +238,25 @@
             </span>
           </div>
           <div class="row wrap">
+            <span class="hint">Точно над клеткой</span>
+            <span class="row tight">
+              <button class="btn sm ghost round" data-fix="left" title="Влево по листу на 1 мм (Shift — 5)" aria-label="Влево на 1 мм">←</button>
+              <button class="btn sm ghost round" data-fix="up" title="Вверх по листу на 1 мм (Shift — 5)" aria-label="Вверх на 1 мм">↑</button>
+              <button class="btn sm ghost round" data-fix="down" title="Вниз по листу на 1 мм (Shift — 5)" aria-label="Вниз на 1 мм">↓</button>
+              <button class="btn sm ghost round" data-fix="right" title="Вправо по листу на 1 мм (Shift — 5)" aria-label="Вправо на 1 мм">→</button>
+            </span>
+          </div>
+          <div class="row wrap">
+            <span class="hint" id="fix-state">без поправки</span>
+            <button class="link right" id="fix-reset">сбросить клетку</button>
+          </div>
+          <div class="row wrap">
             <button class="btn sm ghost" data-test="X">Нарисовать ✕</button>
             <button class="btn sm ghost" data-test="O">Нарисовать ○</button>
             <button class="btn sm ghost" data-test="park">На стоянку</button>
             <button class="link danger right" id="cal-reset">сбросить калибровку</button>
           </div>
-          <p class="hint" id="test-state">«Касание» опускает маркер в центр клетки. Кнопки −1 / +1 сразу меняют высоту касания и двигают руку.</p>
+          <p class="hint" id="test-state">«Касание» опускает маркер в центр клетки. Кнопки −1 / +1 сразу меняют высоту касания и двигают руку. Стрелки сдвигают центр выбранной клетки по листу (как на экране) и сразу ставят руку туда.</p>
         </fieldset>
 
         <fieldset>
