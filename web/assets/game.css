@@ -267,6 +267,7 @@ kbd { font: 11px var(--mono); padding: 0 4px; border: 1px solid currentColor; bo
 .checks li { color: var(--bad); }
 .checks li.ok { color: var(--ok); }
 .checks li.todo { color: var(--steel); }
+.speed-fld { flex: 1; min-width: 150px; max-width: 220px; }
 #marker-hint::before { content: attr(data-r); color: var(--ink); }
 
 .setup-form { min-height: 0; overflow: hidden; }

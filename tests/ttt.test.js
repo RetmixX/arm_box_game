@@ -183,17 +183,19 @@ test('маркер смещён от оси: ✕ и касание ставят 
   assert.ok(Math.hypot(off.u - c.u, off.v - c.v) > 13);
 });
 
-test('○ рисует поворот paint_pov: ось в центре клетки, рука стоит, paint_pov от → до', () => {
-  const cal = { ...T.defaultCal('O'), markerA: 12, markerB: -7, paintFrom: 1, paintTo: 300 };
+test('○ рисует поворот paint_pov: ось в центре клетки, рука стоит, от середины влево, потом вправо', () => {
+  const cal = { ...T.defaultCal('O'), markerA: 12, markerB: -7 };
   const plan = T.drawPlan(cal, 4, 'O');
   const center = T.cellPlan({ ...cal, markerA: 0, markerB: 0 }, 4, true, false)[1]; // ось ровно над центром
   const atCell = plan.filter((p) => p.label !== 'на стоянку');
   for (const p of atCell) assert.deepEqual([p.x, p.angel], [center.x, center.angel], p.label);
   const down = atCell.findIndex((p) => p.label === 'маркер вниз');
-  assert.equal(atCell[down].paint_pov, 1, 'маркер опускается при paint_pov «от»');
-  assert.equal(atCell[down + 1].paint_pov, 300, 'одна команда — поворот до «до»');
-  assert.equal(atCell[down + 1].z, atCell[down].z, 'во время поворота маркер на листе');
-  assert.equal(atCell.filter((p) => p.label.startsWith('рисует')).length, 1);
+  assert.equal(atCell[down].paint_pov, 150, 'маркер опускается при paint_pov в середине');
+  assert.equal(atCell[down + 1].paint_pov, 1, 'первый проход — влево до 1');
+  assert.equal(atCell[down + 2].paint_pov, 300, 'второй проход — вправо до 300, через середину');
+  for (const k of [1, 2]) assert.equal(atCell[down + k].z, atCell[down].z, 'во время поворота маркер на листе');
+  assert.equal(atCell[down + 3].label, 'маркер вверх');
+  assert.equal(atCell.filter((p) => p.label.startsWith('рисует')).length, 2);
   assert.equal(plan[plan.length - 1].paint_pov, 50, 'на стоянке — paint_pov по умолчанию');
   for (const p of plan) assert.equal(T.checkPose(p), null, p.label);
   // радиус круга — смещение маркера
@@ -206,5 +208,5 @@ test('смещение маркера: не задано — в «todo», кру
   assert.ok(def.todo.some((t) => /Смещение маркера/.test(t)));
   assert.deepEqual(T.checkCalibration({ ...T.defaultCal('X'), markerA: 10 }).todo, []);
   assert.ok(T.checkCalibration({ ...T.defaultCal('X'), markerA: 25 }).list.some((t) => /не помещается в клетку/.test(t)));
-  assert.ok(T.checkCalibration({ ...T.defaultCal('X'), markerA: 10, paintFrom: 40, paintTo: 40 }).list.some((t) => /совпадают/.test(t)));
+  assert.ok(T.checkCalibration({ ...T.defaultCal('X'), markerA: 10, paintFrom: 160 }).list.some((t) => /«влево до» < «середина»/.test(t)));
 });

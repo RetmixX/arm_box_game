@@ -215,12 +215,13 @@
         </fieldset>
 
         <fieldset>
-          <legend>Маркер смещён от оси <small>○ рисует поворот paint_pov</small></legend>
+          <legend>Маркер смещён от оси <small>○ рисует поворот paint_pov: от середины влево, потом вправо</small></legend>
           <div class="grid">
             <label class="fld"><span>Смещение вдоль руки</span><input data-k="markerA" inputmode="decimal"><em>мм, от базы +</em></label>
             <label class="fld"><span>Смещение поперёк руки</span><input data-k="markerB" inputmode="decimal"><em>мм, влево +</em></label>
-            <label class="fld"><span>Круг: paint_pov от</span><input data-k="paintFrom" inputmode="numeric"><em>1…300</em></label>
-            <label class="fld"><span>Круг: paint_pov до</span><input data-k="paintTo" inputmode="numeric"><em>1…300</em></label>
+            <label class="fld"><span>Круг: старт (середина)</span><input data-k="paintMid" inputmode="numeric"><em>paint_pov</em></label>
+            <label class="fld"><span>Круг: влево до</span><input data-k="paintFrom" inputmode="numeric"><em>paint_pov</em></label>
+            <label class="fld"><span>Круг: вправо до</span><input data-k="paintTo" inputmode="numeric"><em>paint_pov</em></label>
           </div>
           <p class="hint" id="marker-hint">Как измерить: при нулевом смещении нажмите «Нарисовать ○», затем «Касание» в той же клетке. Точка касания лежит на круге. Смещение — от центра круга до точки: вдоль руки (от базы — плюс) и поперёк (влево, если смотреть от базы вдоль руки, — плюс). Задайте смещение до калибровки центра поля: с ним «Касание» и ✕ ставят в точку кончик маркера, а ○ — ось.</p>
         </fieldset>
@@ -232,6 +233,17 @@
             <label class="fld"><span>Высота</span><input data-k="parkZ" inputmode="decimal"><em>мм</em></label>
             <label class="fld"><span>База</span><input data-k="parkAngel" inputmode="decimal"><em>°</em></label>
           </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Скорость рук <small>POST /api/motors/speed — обе руки</small></legend>
+          <div class="row wrap">
+            <div class="seg sm" id="speed-presets" role="radiogroup" aria-label="Скорость, %">
+              <button data-v="10" role="radio">10</button><button data-v="20" role="radio">20</button><button data-v="30" role="radio">30</button><button data-v="50" role="radio">50</button><button data-v="100" role="radio">100</button>
+            </div>
+            <label class="fld speed-fld"><span>Скорость</span><input id="speed" inputmode="numeric" aria-label="Скорость, %"><em>% (1–100)</em></label>
+          </div>
+          <p class="hint" id="speed-state"></p>
         </fieldset>
 
         <fieldset>

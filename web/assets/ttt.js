@@ -276,15 +276,19 @@
     const P = (pt, z, label, opt) => Object.assign(pose(pt, z, cal, label, f, opt), { cell });
     const out = [];
     if (mark === 'O') {
-      // ○ — поворотом paint_pov: ось в центре клетки, рука стоит, маркер обходит круг сам
+      // ○ — поворотом paint_pov: ось в центре клетки, рука стоит, маркер обходит круг сам.
+      // Два прохода от середины: сначала влево (к paintFrom), потом вправо (к paintTo) —
+      // обратно через середину по уже нарисованной дуге, маркер не поднимается
       const c = cellBoard(cell, +cal.pitch);
-      const from = +cal.paintFrom, to = +cal.paintTo;
-      out.push(P(c, A, 'подход к клетке ' + cellName(cell), { axis: true, paint: from }));
-      out.push(P(c, T, 'над клеткой ' + cellName(cell), { axis: true, paint: from }));
-      out.push(P(c, 'draw', 'маркер вниз', { axis: true, paint: from }));
-      out.push(P(c, 'draw', 'рисует: окружность (paint_pov ' + Math.round(from) + ' → ' + Math.round(to) + ')', { axis: true, paint: to }));
-      out.push(P(c, T, 'маркер вверх', { axis: true, paint: to }));
-      out.push(P(c, A, 'отход вверх', { axis: true, paint: to }));
+      const mid = +cal.paintMid, from = +cal.paintFrom, to = +cal.paintTo;
+      const ax = (z, label, paint) => P(c, z, label, { axis: true, paint });
+      out.push(ax(A, 'подход к клетке ' + cellName(cell), mid));
+      out.push(ax(T, 'над клеткой ' + cellName(cell), mid));
+      out.push(ax('draw', 'маркер вниз', mid));
+      out.push(ax('draw', 'рисует: окружность влево (paint_pov ' + Math.round(mid) + ' → ' + Math.round(from) + ')', from));
+      out.push(ax('draw', 'рисует: окружность вправо (paint_pov ' + Math.round(from) + ' → ' + Math.round(to) + ')', to));
+      out.push(ax(T, 'маркер вверх', to));
+      out.push(ax(A, 'отход вверх', to));
       if (withPark) out.push(park(cal));
       return dedupe(out);
     }
@@ -366,7 +370,9 @@
     if (!(+cal.liftTravel >= 15)) list.push('Подъём между штрихами — хотя бы 15 мм над листом');
     const r = markerRadius(cal);
     if (2 * r > 0.9 * +cal.pitch) list.push('Круг ○ диаметром ' + Math.round(2 * r) + ' мм не помещается в клетку ' + cal.pitch + ' мм — проверьте смещение маркера');
-    if (Math.round(+cal.paintFrom) === Math.round(+cal.paintTo)) list.push('Круг ○: paint_pov «от» и «до» совпадают — маркер не повернётся');
+    if (!(+cal.paintFrom < +cal.paintMid && +cal.paintMid < +cal.paintTo)) {
+      list.push('Круг ○: paint_pov должен идти «влево до» < «середина» < «вправо до» (сейчас ' + cal.paintFrom + ', ' + cal.paintMid + ', ' + cal.paintTo + ')');
+    }
     const todo = [];
     if (r < 3) todo.push('Смещение маркера от оси не задано: ○ рисуется поворотом paint_pov и без смещения выйдет точкой, ✕ — без компенсации смещения');
     if (!(+cal.liftApproach >= +cal.liftTravel)) list.push('Подъём при подходе к клетке должен быть не меньше подъёма между штрихами');
@@ -381,8 +387,9 @@
     // маркер торчит из держателя на 60 мм: кончик касается листа примерно при z схвата = 60
     zDraw: 60, liftTravel: 40, liftApproach: 100, zTilt: 0,
     size: 0.6, step: 4, pov: 150, paintPov: 50,
-    // смещение кончика маркера от оси paint_pov при paint_pov = paintPov; круг ○ — поворот paint_pov от…до
-    markerA: 0, markerB: 0, paintFrom: 1, paintTo: 300,
+    // смещение кончика маркера от оси paint_pov при paint_pov = paintPov;
+    // круг ○ — поворот paint_pov от середины влево до paintFrom, затем вправо до paintTo
+    markerA: 0, markerB: 0, paintMid: 150, paintFrom: 1, paintTo: 300,
     parkX: 160, parkZ: 200, parkAngel: 260,
   };
 

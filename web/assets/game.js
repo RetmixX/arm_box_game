@@ -29,6 +29,7 @@
     level: 'medium',
     physical: true,
     lamps: true,
+    speed: 30, // %, POST /api/motors/speed — обе руки
     score: { X: 0, O: 0, D: 0 },
     cal: { X: TTT.defaultCal('X'), O: TTT.defaultCal('O') },
     edit: 'X',
@@ -97,7 +98,7 @@
     if (a.driver) a.driver.dispose();
     const u = urls(side);
     a.driver = S.demo ? new Driver.DemoDriver() : u ? new Driver.RealDriver(u.api, u.ws, u.lamp) : null;
-    Object.assign(a, { link: a.driver ? 'unknown' : 'none', err: '', pos: {}, lampKey: '', lampErr: '' });
+    Object.assign(a, { link: a.driver ? 'unknown' : 'none', err: '', pos: {}, lampKey: '', lampErr: '', speedApplied: null, speedErr: '' });
     if (!a.driver) { render(); return; }
     if (S.demo) a.driver.connect(); // движения игры — только POST /pos/set-paint, WebSocket не нужен
     const my = a.gen;
@@ -144,6 +145,10 @@
     if (a.last && plan.length && plan[0].cell !== a.last.cell && a.last.z < up) {
       plan = [Object.assign({}, a.last, { z: up, label: 'вверх перед переездом' })].concat(plan);
     }
+    // скорость: GET в backend нет — выставляем сами перед первым движением после подключения и после смены
+    if (a.speedApplied !== S.speed) {
+      try { await applySpeed(side); } catch (e) { throw new Error('Рука ' + SIGN[side] + ': скорость ' + S.speed + ' % не выставлена — ' + e.message + '. Движение не начато'); }
+    }
     for (const step of plan) {
       const e = TTT.checkPose(step);
       if (e) throw new Error('Калибровка руки ' + SIGN[side] + ': ' + step.label + ' — ' + e);
@@ -161,6 +166,22 @@
     } finally {
       active = null;
       render();
+    }
+  }
+
+  /** POST /api/motors/speed; вызывать только из очереди enqueue — не посреди движения */
+  async function applySpeed(side) {
+    const a = arms[side];
+    const v = S.speed;
+    try {
+      await a.driver.setSpeed(v);
+      a.speedApplied = v;
+      a.speedErr = '';
+    } catch (e) {
+      a.speedErr = e.message;
+      throw e;
+    } finally {
+      renderSpeed();
     }
   }
 
@@ -486,6 +507,7 @@
     renderArms();
     renderSetupControls();
     renderTestState();
+    renderSpeed();
     syncLamps();
     dirty = true;
   }
@@ -824,6 +846,7 @@
     });
     $$('#cal-side button').forEach((b) => b.setAttribute('aria-checked', String(+b.dataset.v === +cal.side)));
     renderFix();
+    renderSpeed();
     renderChecks();
   }
 
@@ -935,6 +958,43 @@
     save(); fillForm();
     $('#test-state').textContent = 'Рука ' + SIGN[side] + ': калибровка сброшена к значениям по умолчанию. Рука не двигалась.';
   });
+
+  /* ------------------------------ скорость ------------------------------ */
+
+  function renderSpeed() {
+    $$('#speed-presets button').forEach((b) => b.setAttribute('aria-checked', String(+b.dataset.v === S.speed)));
+    const inp = $('#speed');
+    if (document.activeElement !== inp) inp.value = S.speed;
+    $('#speed-state').textContent = SIDES.map((side) => {
+      const a = arms[side];
+      if (!a.driver) return 'Рука ' + SIGN[side] + ': не настроена';
+      if (a.speedErr && a.speedApplied !== S.speed) return 'Рука ' + SIGN[side] + ': ✗ ' + a.speedErr;
+      return 'Рука ' + SIGN[side] + ': ' + (a.speedApplied === S.speed ? S.speed + ' % ✓' : S.speed + ' % — выставится перед движением');
+    }).join(' · ');
+  }
+
+  function setSpeed(v) {
+    v = Math.round(v);
+    if (!(v >= 1 && v <= 100)) { toast('Скорость — от 1 до 100 %'); renderSpeed(); return; }
+    if (v === S.speed) { renderSpeed(); return; }
+    S.speed = v;
+    save();
+    SIDES.forEach((side) => {
+      const a = arms[side];
+      a.speedApplied = null;
+      // через общую очередь: если рука сейчас едет, скорость сменится после движения
+      if (armReady(side)) enqueue(() => applySpeed(side)).catch((e) => toast('Рука ' + SIGN[side] + ': скорость не выставлена — ' + e.message));
+    });
+    renderSpeed();
+  }
+
+  $('#speed-presets').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-v]');
+    if (b) setSpeed(+b.dataset.v);
+  });
+  $('#speed').addEventListener('change', (e) => setSpeed(Number(String(e.target.value).replace(',', '.'))));
+  $('#speed').addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
+  $('#speed').addEventListener('focus', (e) => e.target.select());
 
   $('#t-cell').innerHTML = Array.from({ length: 9 }, (_, i) => '<option value="' + i + '"' + (i === 4 ? ' selected' : '') + '>Клетка ' + TTT.cellName(i) + '</option>').join('');
   $('#t-cell').addEventListener('change', () => { renderFix(); dirty = true; });
@@ -1058,7 +1118,7 @@
 
   // перенос настроек на вторую вебку
   $('#cfg-save').addEventListener('click', () => {
-    const data = { app: 'armbox-ttt', version: 1, dev: S.dev, transport: S.transport, lamps: S.lamps, cal: S.cal };
+    const data = { app: 'armbox-ttt', version: 1, dev: S.dev, transport: S.transport, lamps: S.lamps, speed: S.speed, cal: S.cal };
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
     a.download = 'armbox-ttt.json';
@@ -1076,6 +1136,7 @@
       Object.assign(S.dev, d.dev || {});
       if (d.transport) S.transport = d.transport;
       if (typeof d.lamps === 'boolean') S.lamps = d.lamps;
+      if (Number.isInteger(d.speed) && d.speed >= 1 && d.speed <= 100) S.speed = d.speed;
       SIDES.forEach((side) => { if (d.cal && d.cal[side]) S.cal[side] = Object.assign(TTT.defaultCal(side), TTT.migrateCal(d.cal[side]).cal); });
       save(); fillForm(); startArms(); refreshCam();
       toast('Настройки загружены');
