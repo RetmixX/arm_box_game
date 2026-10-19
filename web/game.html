@@ -248,17 +248,19 @@
               <button class="btn sm ghost round" data-fix="a+" title="База +1° — против часовой (Shift — 5)" aria-label="База плюс 1 градус">+</button>
             </span>
           </div>
-          <div class="row wrap">
-            <span class="hint" id="fix-state">без поправки</span>
-            <button class="link right" id="fix-reset">сбросить клетку</button>
-          </div>
+          <p class="hint" id="fix-state">без поправки</p>
           <div class="row wrap">
             <button class="btn sm ghost" data-test="X">Нарисовать ✕</button>
             <button class="btn sm ghost" data-test="O">Нарисовать ○</button>
             <button class="btn sm ghost" data-test="park">На стоянку</button>
-            <button class="link danger right" id="cal-reset">сбросить калибровку</button>
           </div>
-          <p class="hint" id="test-state">«Касание» опускает маркер в центр клетки. Кнопки −1 / +1 сразу меняют высоту касания и двигают руку. «Поправка клетки» — только для выбранной клетки: вылет и база двигают руку над клеткой, высота — опускает маркер до касания.</p>
+          <div class="row wrap">
+            <span class="hint">Сбросить</span>
+            <button class="btn sm ghost" id="fix-reset" title="Обнулить поправку выбранной клетки и поставить руку над ней">клетку А3</button>
+            <button class="btn sm ghost" id="fix-reset-all" title="Обнулить поправки всех 9 клеток этой руки">все клетки</button>
+            <button class="btn sm ghost danger" id="cal-reset" title="Вернуть всю калибровку руки к заводской: сторона, центр поля, маркер, стоянка, поправки клеток">всю калибровку руки ✕</button>
+          </div>
+          <p class="hint" id="test-state">«Касание» опускает маркер в центр клетки. «Нарисовать» оставляет руку над клеткой с поднятым маркером — на стоянку отправляет отдельная кнопка. Кнопки −1 / +1 сразу меняют высоту касания и двигают руку. «Поправка клетки» — только для выбранной клетки: вылет и база двигают руку над клеткой, высота — опускает маркер до касания.</p>
         </fieldset>
 
         <fieldset>

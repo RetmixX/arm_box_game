@@ -791,7 +791,12 @@
   let testing = false;
 
   function renderTestState() {
-    $$('[data-test], [data-fix], #fix-reset').forEach((b) => { b.disabled = testing || !!game.pending || !!active; });
+    const busy = testing || !!game.pending || !!active;
+    $$('[data-test], [data-fix]').forEach((b) => { b.disabled = busy; });
+    const cal = S.cal[S.edit];
+    const empty = (i) => { const f = TTT.cellFix(cal, i); return !f.x && !f.z && !f.a; };
+    $('#fix-reset').disabled = busy || empty(+$('#t-cell').value);
+    $('#fix-reset-all').disabled = Array.from({ length: 9 }, (_, i) => i).every(empty);
     const el = $('#test-state');
     if (testing && active) el.textContent = 'Рука ' + SIGN[active.side] + ': ' + active.label + '…';
   }
@@ -898,9 +903,10 @@
     el.addEventListener('focus', () => el.select());
   });
   $('#cal-reset').addEventListener('click', () => {
-    if (!confirm('Сбросить калибровку руки ' + SIGN[S.edit] + '?')) return;
+    if (!confirm('Сбросить всю калибровку руки ' + SIGN[S.edit] + '? Сторона, центр поля, маркер, стоянка и поправки клеток вернутся к значениям по умолчанию.')) return;
     S.cal[S.edit] = TTT.defaultCal(S.edit);
     save(); fillForm();
+    $('#test-state').textContent = 'Рука ' + SIGN[S.edit] + ': калибровка сброшена к значениям по умолчанию. Рука не двигалась.';
   });
 
   $('#t-cell').innerHTML = Array.from({ length: 9 }, (_, i) => '<option value="' + i + '"' + (i === 4 ? ' selected' : '') + '>Клетка ' + TTT.cellName(i) + '</option>').join('');
@@ -919,8 +925,9 @@
     const plans = {
       over: [TTT.cellPlan(cal, cell, false), 'над клеткой ' + TTT.cellName(cell)],
       touch: [TTT.cellPlan(cal, cell, true), 'касание, высота ' + cal.zDraw + ' мм'],
-      X: [TTT.drawPlan(cal, cell, 'X'), 'рисует ✕ в ' + TTT.cellName(cell)],
-      O: [TTT.drawPlan(cal, cell, 'O'), 'рисует ○ в ' + TTT.cellName(cell)],
+      // проверка рисования — без стоянки: рука остаётся над клеткой, знак видно сразу
+      X: [TTT.drawPlan(cal, cell, 'X', false), 'рисует ✕ в ' + TTT.cellName(cell)],
+      O: [TTT.drawPlan(cal, cell, 'O', false), 'рисует ○ в ' + TTT.cellName(cell)],
       park: [[TTT.park(cal)], 'на стоянку'],
     };
     const [plan, title] = plans[kind];
@@ -966,8 +973,9 @@
     const cal = S.cal[S.edit];
     const cell = +$('#t-cell').value;
     $('#fix-state').textContent = fixText(cal, cell);
-    const f = TTT.cellFix(cal, cell);
-    $('#fix-reset').hidden = !f.x && !f.z && !f.a;
+    $('#fix-reset').textContent = 'клетку ' + TTT.cellName(cell);
+    $('#cal-reset').textContent = 'всю калибровку руки ' + SIGN[S.edit];
+    renderTestState();
   }
 
   /**
@@ -1011,6 +1019,12 @@
     setFix(cell, f, key);
   }));
   $('#fix-reset').addEventListener('click', () => setFix(+$('#t-cell').value, { x: 0, z: 0, a: 0 }, 'x'));
+  $('#fix-reset-all').addEventListener('click', () => {
+    if (!confirm('Обнулить поправки всех клеток руки ' + SIGN[S.edit] + '? Общая калибровка останется.')) return;
+    S.cal[S.edit].fix = TTT.defaultCal(S.edit).fix;
+    save(); fillForm();
+    $('#test-state').textContent = 'Рука ' + SIGN[S.edit] + ': поправки всех клеток обнулены. Рука не двигалась.';
+  });
 
   // перенос настроек на вторую вебку
   $('#cfg-save').addEventListener('click', () => {

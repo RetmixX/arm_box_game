@@ -106,6 +106,7 @@ kbd { font: 11px var(--mono); padding: 0 4px; border: 1px solid currentColor; bo
 .link { color: var(--steel); font-size: 13px; text-decoration: none; }
 .link:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
 .link.danger:hover { color: var(--bad); }
+.btn.danger:not(:disabled):hover { color: var(--bad); border-color: var(--bad); }
 
 /* переключатель */
 .toggle { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; font-weight: 500; }
