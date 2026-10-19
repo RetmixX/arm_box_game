@@ -110,20 +110,19 @@
     return { bx: (c - 1) * pitch, by: (1 - r) * pitch };
   }
 
-  /** Предел поправки клетки: дальше 40 % шага знак полезет в соседнюю клетку */
-  const FIX_MAX = 0.4;
+  /**
+   * Поправка клетки в осях руки: { x — вылет, мм; z — высота касания, мм; a — поворот базы, ° }.
+   * Прибавляется к каждой команде этой клетки: наведение, касание, штрихи знака.
+   * Предел FIX_LIMITS — дальше неверны уже центр поля, шаг или высота касания.
+   */
+  const FIX_LIMITS = { x: 20, z: 10, a: 8 };
+  const NO_FIX = { x: 0, z: 0, a: 0 };
 
-  /** Поправка центра клетки i по листу, мм: [вправо, вверх]. Нет поправки — [0, 0] */
   function cellFix(cal, i) {
     const f = cal.fix && cal.fix[i];
-    return Array.isArray(f) && Number.isFinite(+f[0]) && Number.isFinite(+f[1]) ? [+f[0], +f[1]] : [0, 0];
-  }
-
-  /** Центр клетки i с поправкой — куда рука ставит маркер на этом листе */
-  function cellCenter(cal, i) {
-    const c = cellBoard(i, +cal.pitch);
-    const [dx, dy] = cellFix(cal, i);
-    return { bx: c.bx + dx, by: c.by + dy };
+    if (!f || typeof f !== 'object' || Array.isArray(f)) return Object.assign({}, NO_FIX);
+    const n = (v) => (Number.isFinite(+v) ? Math.round(+v) : 0);
+    return { x: n(f.x), z: n(f.z), a: n(f.a) };
   }
 
   const rotOf = (cal) => rad((+cal.side || 0) + (+cal.turn || 0));
@@ -169,7 +168,7 @@
 
   /** Штрихи знака в координатах поля: крестик — две диагонали, нолик — окружность */
   function markStrokes(cell, mark, cal) {
-    const c = cellCenter(cal, cell);
+    const c = cellBoard(cell, +cal.pitch);
     const h = (+cal.pitch * clamp(+cal.size || 0.6, 0.2, 0.9)) / 2;
     const step = clamp(+cal.step || 4, 1, 20);
     if (mark === 'X') {
@@ -196,13 +195,15 @@
     return +cal.zDraw + (+cal.zTilt || 0) * ((x - +cal.cu) / 100);
   }
 
-  function pose(pt, z, cal, label) {
+  /** Поза над точкой поля; fix — поправка клетки (высота — только для касания и рисования) */
+  function pose(pt, z, cal, label, fix = NO_FIX) {
     const a = boardToArm(pt.bx, pt.by, cal);
     const p = armToPolar(a.u, a.v);
+    const x = p.x + fix.x;
     return {
-      x: Math.round(p.x),
-      z: Math.round(z === 'draw' ? drawZ(p.x, cal) : z),
-      angel: Math.round(p.angel),
+      x: Math.round(x),
+      z: Math.round(z === 'draw' ? drawZ(x, cal) + fix.z : z),
+      angel: Math.round(p.angel + fix.a),
       pov_gripper: clamp(Math.round(+cal.pov), 1, 300),
       grip: !!cal.grip,
       label,
@@ -226,12 +227,13 @@
     const T = +cal.zTravel;
     const out = [];
     const strokes = markStrokes(cell, mark, cal);
+    const f = cellFix(cal, cell);
     strokes.forEach((s, si) => {
       const name = mark === 'X' ? 'линия ' + (si + 1) + ' из 2' : 'окружность';
-      out.push(pose(s[0], T, cal, 'к клетке ' + cellName(cell)));
-      out.push(pose(s[0], 'draw', cal, 'маркер вниз'));
-      for (let k = 1; k < s.length; k++) out.push(pose(s[k], 'draw', cal, 'рисует: ' + name));
-      out.push(pose(s[s.length - 1], T, cal, 'маркер вверх'));
+      out.push(pose(s[0], T, cal, 'к клетке ' + cellName(cell), f));
+      out.push(pose(s[0], 'draw', cal, 'маркер вниз', f));
+      for (let k = 1; k < s.length; k++) out.push(pose(s[k], 'draw', cal, 'рисует: ' + name, f));
+      out.push(pose(s[s.length - 1], T, cal, 'маркер вверх', f));
     });
     if (withPark) out.push(park(cal));
     return dedupe(out);
@@ -239,9 +241,10 @@
 
   /** Над центром клетки; touch — опустить маркер до касания */
   function cellPlan(cal, cell, touch) {
-    const c = cellCenter(cal, cell);
-    const list = [pose(c, +cal.zTravel, cal, 'над клеткой ' + cellName(cell))];
-    if (touch) list.push(pose(c, 'draw', cal, 'касание'));
+    const c = cellBoard(cell, +cal.pitch);
+    const f = cellFix(cal, cell);
+    const list = [pose(c, +cal.zTravel, cal, 'над клеткой ' + cellName(cell), f)];
+    if (touch) list.push(pose(c, 'draw', cal, 'касание', f));
     return list;
   }
 
@@ -277,9 +280,11 @@
       }
       cells.push(err);
       if (err) list.push('Клетка ' + cellName(i) + ': ' + err);
-      const [dx, dy] = cellFix(cal, i);
-      if (Math.max(Math.abs(dx), Math.abs(dy)) > FIX_MAX * +cal.pitch) {
-        list.push('Клетка ' + cellName(i) + ': поправка ' + dx + ', ' + dy + ' мм больше ' + Math.round(FIX_MAX * +cal.pitch) + ' — проверьте центр поля и шаг клетки');
+      const f = cellFix(cal, i);
+      const over = Object.keys(FIX_LIMITS).filter((k) => Math.abs(f[k]) > FIX_LIMITS[k]);
+      if (over.length) {
+        const names = { x: 'вылет', z: 'высота', a: 'база' };
+        list.push('Клетка ' + cellName(i) + ': поправка ' + over.map((k) => names[k] + ' ' + f[k] + ' (предел ±' + FIX_LIMITS[k] + ')').join(', ') + ' — проверьте центр поля, шаг и высоту касания');
       }
     }
     const pk = checkPose(park(cal));
@@ -302,11 +307,11 @@
   const DEFAULT_SIDE = { X: 90, O: 270 };
 
   /** Копия калибровки по умолчанию для руки side ('X' | 'O'); поправки клеток — свой массив на каждую копию */
-  const defaultCal = (side) => Object.assign({}, DEFAULT_CAL, { side: DEFAULT_SIDE[side], fix: Array.from({ length: 9 }, () => [0, 0]) });
+  const defaultCal = (side) => Object.assign({}, DEFAULT_CAL, { side: DEFAULT_SIDE[side], fix: Array.from({ length: 9 }, () => Object.assign({}, NO_FIX)) });
 
   const api = {
     LINES, other, result, free, turnOf, minimax, bestMoves, winningMove, chooseMove, LEVELS,
-    cellBoard, cellFix, cellCenter, FIX_MAX, boardToArm, armToBoard, armToPolar, polarToArm, markStrokes,
+    cellBoard, cellFix, FIX_LIMITS, boardToArm, armToBoard, armToPolar, polarToArm, markStrokes,
     drawPlan, cellPlan, park, checkPose, checkCalibration, cellName, DEFAULT_CAL,
     DEFAULT_SIDE, defaultCal,
   };

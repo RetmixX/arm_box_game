@@ -237,13 +237,19 @@
               <button class="btn sm ghost round" data-test="up" title="Выше на 1 мм" aria-label="Выше на 1 мм">+1</button>
             </span>
           </div>
-          <div class="row wrap">
-            <span class="hint">Точно над клеткой</span>
-            <span class="row tight">
-              <button class="btn sm ghost round" data-fix="left" title="Влево по листу на 1 мм (Shift — 5)" aria-label="Влево на 1 мм">←</button>
-              <button class="btn sm ghost round" data-fix="up" title="Вверх по листу на 1 мм (Shift — 5)" aria-label="Вверх на 1 мм">↑</button>
-              <button class="btn sm ghost round" data-fix="down" title="Вниз по листу на 1 мм (Shift — 5)" aria-label="Вниз на 1 мм">↓</button>
-              <button class="btn sm ghost round" data-fix="right" title="Вправо по листу на 1 мм (Shift — 5)" aria-label="Вправо на 1 мм">→</button>
+          <p class="hint">Поправка выбранной клетки — к общей калибровке</p>
+          <div class="row wrap fix-row">
+            <span class="row tight"><span class="hint">вылет</span>
+              <button class="btn sm ghost round" data-fix="x-" title="Вылет −1 мм (Shift — 5)" aria-label="Вылет минус 1 мм">−</button>
+              <button class="btn sm ghost round" data-fix="x+" title="Вылет +1 мм (Shift — 5)" aria-label="Вылет плюс 1 мм">+</button>
+            </span>
+            <span class="row tight"><span class="hint">высота</span>
+              <button class="btn sm ghost round" data-fix="z-" title="Касание ниже на 1 мм" aria-label="Высота минус 1 мм">−</button>
+              <button class="btn sm ghost round" data-fix="z+" title="Касание выше на 1 мм" aria-label="Высота плюс 1 мм">+</button>
+            </span>
+            <span class="row tight"><span class="hint">база</span>
+              <button class="btn sm ghost round" data-fix="a-" title="База −1° — по часовой (Shift — 5)" aria-label="База минус 1 градус">−</button>
+              <button class="btn sm ghost round" data-fix="a+" title="База +1° — против часовой (Shift — 5)" aria-label="База плюс 1 градус">+</button>
             </span>
           </div>
           <div class="row wrap">
@@ -256,7 +262,7 @@
             <button class="btn sm ghost" data-test="park">На стоянку</button>
             <button class="link danger right" id="cal-reset">сбросить калибровку</button>
           </div>
-          <p class="hint" id="test-state">«Касание» опускает маркер в центр клетки. Кнопки −1 / +1 сразу меняют высоту касания и двигают руку. Стрелки сдвигают центр выбранной клетки по листу (как на экране) и сразу ставят руку туда.</p>
+          <p class="hint" id="test-state">«Касание» опускает маркер в центр клетки. Кнопки −1 / +1 сразу меняют высоту касания и двигают руку. «Поправка клетки» — только для выбранной клетки: вылет и база двигают руку над клеткой, высота — опускает маркер до касания.</p>
         </fieldset>
 
         <fieldset>
