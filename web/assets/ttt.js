@@ -188,7 +188,8 @@
 
   /* ============================ план движения ============================ */
 
-  const LIMITS = { x: [10, 300], z: [10, 300], angel: [1, 360], pov_gripper: [1, 300] };
+  // paint_pov — поле /pos/set-paint (по умолчанию 50), диапазон как у pov_gripper
+  const LIMITS = { x: [10, 300], z: [10, 300], angel: [1, 360], pov_gripper: [1, 300], paint_pov: [1, 300] };
 
   /** Высота касания с поправкой на вылет: жёсткая насадка не прощает неровностей */
   function drawZ(x, cal) {
@@ -205,18 +206,18 @@
       z: Math.round(z === 'draw' ? drawZ(x, cal) + fix.z : z),
       angel: Math.round(p.angel + fix.a),
       pov_gripper: clamp(Math.round(+cal.pov), 1, 300),
-      grip: !!cal.grip,
+      paint_pov: Math.round(+cal.paintPov),
       label,
     };
   }
 
   function park(cal) {
-    return { x: Math.round(+cal.parkX), z: Math.round(+cal.parkZ), angel: Math.round(+cal.parkAngel), pov_gripper: clamp(Math.round(+cal.pov), 1, 300), grip: !!cal.grip, label: 'на стоянку' };
+    return { x: Math.round(+cal.parkX), z: Math.round(+cal.parkZ), angel: Math.round(+cal.parkAngel), pov_gripper: clamp(Math.round(+cal.pov), 1, 300), paint_pov: Math.round(+cal.paintPov), label: 'на стоянку' };
   }
 
   /** Подряд идущие одинаковые позы (после округления) не отправляем */
   function dedupe(list) {
-    return list.filter((p, i) => !i || ['x', 'z', 'angel', 'pov_gripper', 'grip'].some((k) => p[k] !== list[i - 1][k]));
+    return list.filter((p, i) => !i || ['x', 'z', 'angel', 'pov_gripper', 'paint_pov'].some((k) => p[k] !== list[i - 1][k]));
   }
 
   /**
@@ -250,7 +251,7 @@
 
   /** Ошибка позы или null */
   function checkPose(p) {
-    const names = { x: 'вылет', z: 'высота', angel: 'угол базы', pov_gripper: 'поворот схвата' };
+    const names = { x: 'вылет', z: 'высота', angel: 'угол базы', pov_gripper: 'поворот схвата', paint_pov: 'paint_pov' };
     for (const k of Object.keys(LIMITS)) {
       const [lo, hi] = LIMITS[k];
       if (!(p[k] >= lo && p[k] <= hi)) return names[k] + ' ' + p[k] + ' вне ' + lo + '–' + hi;
@@ -299,7 +300,7 @@
   const DEFAULT_CAL = {
     side: 0, turn: 0, cu: 200, cv: 0, pitch: 50,
     zTravel: 60, zDraw: 20, zTilt: 0,
-    size: 0.6, step: 4, pov: 150, grip: false,
+    size: 0.6, step: 4, pov: 150, paintPov: 50,
     parkX: 160, parkZ: 200, parkAngel: 260,
   };
 

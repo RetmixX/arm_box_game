@@ -163,8 +163,7 @@
             <input class="input mono" data-d="camHost" placeholder="192.168.0.105" aria-label="IP камеры" autocomplete="off" spellcheck="false"><span class="muted">:</span>
             <input class="input mono" data-d="camPort" placeholder="8080" inputmode="numeric" aria-label="Порт камеры" autocomplete="off"></div></div>
           <div class="row wrap">
-            <span class="hint">Команды</span>
-            <div class="seg sm" id="transport"><button data-v="ws">WebSocket</button><button data-v="http">POST</button></div>
+            <span class="hint">Движения — POST /api/motors/pos/set-paint</span>
             <label class="toggle sm right">
               <input type="checkbox" id="demo" role="switch">
               <span class="toggle-track" aria-hidden="true"></span>
@@ -210,10 +209,7 @@
             <label class="fld"><span>Поворот схвата</span><input data-k="pov" inputmode="decimal"><em>°</em></label>
             <label class="fld"><span>Размер знака</span><input data-k="size" data-scale="100" inputmode="decimal"><em>% клетки</em></label>
             <label class="fld"><span>Шаг штриха</span><input data-k="step" inputmode="decimal"><em>мм</em></label>
-          </div>
-          <div class="row">
-            <span class="hint">gripper_state при рисовании</span>
-            <div class="seg sm" id="cal-grip"><button data-v="false">false</button><button data-v="true">true</button></div>
+            <label class="fld"><span>paint_pov</span><input data-k="paintPov" inputmode="numeric"><em>по умолч. 50</em></label>
           </div>
         </fieldset>
 

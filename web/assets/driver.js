@@ -3,6 +3,7 @@
  * Оба драйвера имеют одинаковый интерфейс:
  *   getPos() getTemp() getLoad() -> Promise<{id: value}>
  *   move(cmd, via)                -> Promise, резолвится после завершения движения
+ *   movePaint(cmd)                -> то же для рисования маркером: POST /pos/set-paint
  *   onWs(cb) connect() dispose()
  */
 (function () {
@@ -24,6 +25,17 @@
       angel: Math.round(c.angel),
       pov_gripper: Math.round(c.pov_gripper),
       gripper_state: !!c.gripper_state,
+    };
+  }
+
+  /** Команда рисования (POST /pos/set-paint): вместо gripper_state — paint_pov, всё целое */
+  function normalizePaint(c) {
+    return {
+      x: Math.round(c.x),
+      z: Math.round(c.z),
+      angel: Math.round(c.angel),
+      pov_gripper: Math.round(c.pov_gripper),
+      paint_pov: Math.round(c.paint_pov),
     };
   }
 
@@ -107,6 +119,15 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json', accept: 'application/json' },
         body: JSON.stringify(cmd),
+      }, this.moveTimeoutMs);
+    }
+
+    /** Движение для рисования — только REST: ответ приходит после завершения движения */
+    async movePaint(raw) {
+      await request(this.api + '/pos/set-paint', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify(normalizePaint(raw)),
       }, this.moveTimeoutMs);
     }
 
@@ -238,6 +259,12 @@
       return p;
     }
 
+    /** Рисование в демо: та же траектория, схват не трогаем */
+    movePaint(raw) {
+      const c = normalizePaint(raw);
+      return this.move({ x: c.x, z: c.z, angel: c.angel, pov_gripper: c.pov_gripper, gripper_state: false });
+    }
+
     onWs(cb) { cb('open'); }
     connect() {}
     dispose() {}
@@ -275,5 +302,5 @@
     return null;
   }
 
-  window.Driver = { RealDriver, DemoDriver, Camera, cameraRunning, asDict, normalize, request, lampBody };
+  window.Driver = { RealDriver, DemoDriver, Camera, cameraRunning, asDict, normalize, normalizePaint, request, lampBody };
 })();

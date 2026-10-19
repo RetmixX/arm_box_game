@@ -102,3 +102,17 @@ test('слишком большая поправка клетки — в спи�
   cal.fix[8] = { x: 0, z: 0, a: 9 };
   assert.ok(T.checkCalibration(cal).list.some((t) => /В1: поправка база 9/.test(t)), T.checkCalibration(cal).list.join('\n'));
 });
+
+test('позы игры — для /pos/set-paint: paint_pov из калибровки (по умолчанию 50), без gripper_state', () => {
+  const cal = T.defaultCal('X');
+  assert.equal(cal.paintPov, 50);
+  const plan = T.drawPlan(cal, 4, 'O');
+  for (const p of plan) {
+    assert.equal(p.paint_pov, 50, p.label);
+    assert.ok(!('grip' in p) && !('gripper_state' in p), p.label);
+  }
+  assert.equal(T.cellPlan({ ...cal, paintPov: 72 }, 0, true)[1].paint_pov, 72);
+  assert.match(T.checkPose({ ...plan[0], paint_pov: 400 }), /paint_pov 400/);
+  assert.match(T.checkPose({ ...plan[0], paint_pov: 0 }), /paint_pov 0 вне 1–300/, 'диапазон как у pov_gripper');
+  assert.match(T.checkPose({ ...plan[0], paint_pov: NaN }), /paint_pov/);
+});

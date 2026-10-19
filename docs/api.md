@@ -12,6 +12,7 @@ CORS на рабочих руках настроен — страницы обр
 | GET | `/api/motors/temp` | то же, °C |
 | GET | `/api/motors/load` | то же; биты 0–9 — величина 0…1023, бит 10 — направление |
 | POST | `/api/motors/pos/set` | `{x, z, angel, pov_gripper, gripper_state}` → ответ после завершения движения |
+| POST | `/api/motors/pos/set-paint` | `{x, z, angel, pov_gripper, paint_pov}` — движение для рисования маркером; **все движения игры идут сюда** (`Driver.movePaint`). `paint_pov` — int 1…300 (как `pov_gripper`), по умолчанию 50 (калибровка руки в игре). Ответ — после завершения движения, как у `pos/set` |
 | WS | `/ws` | `{"command": "exec", x, z, angel, pov_gripper, gripper_state}` → `{"status": "ok"}` или `{status, message}` |
 | GET | `/api/motors/speed` | `{"speed": 30}`, % — **только с патчем `backend-patch`**, иначе 404 |
 | POST | `/api/motors/speed` | `{"speed": 1…100}` — то же |
@@ -26,7 +27,9 @@ CORS на рабочих руках настроен — страницы обр
 | `pov_gripper` | int, ° | поворот схвата, 1…300; мотор 5 = `ceil(pov × 3.41)` |
 | `gripper_state` | bool | мотор 6: `true` → 370, `false` → 710. Открыт это или закрыт — настройка (`gripTrue`) |
 
-Pydantic принимает только целые — фронт округляет (`Driver.normalize`). Для рисования маркером это даёт ступеньку 1° по базе (~3,5 мм на вылете 200 мм); дробный `angel` в backend сделал бы линии ровнее (см. backlog).
+Схема backend (OpenAPI, 19.10.2026): `pos/set`, `pos/set-paint`, `GET pos|temp|load`, `POST speed`. `GET /api/motors/speed` в схеме нет (FastAPI отвечает 405) — скорость задаётся только кнопками / ползунком через `POST`; до первого нажатия пульт и отладка показывают её «неизвестной». WS в OpenAPI не описывается; для `set-paint` команды WS нет — игра шлёт только REST.
+
+Pydantic принимает только целые — фронт округляет (`Driver.normalize`, `Driver.normalizePaint`). Для рисования маркером это даёт ступеньку 1° по базе (~3,5 мм на вылете 200 мм); дробный `angel` в backend сделал бы линии ровнее (см. backlog).
 
 WS-ответы не содержат id и приходят строго по порядку отправки — `RealDriver` сопоставляет их очередью FIFO. Обрыв WS → все ожидающие команды отклоняются, переподключение с экспоненциальной задержкой до 10 с.
 

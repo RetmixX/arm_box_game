@@ -96,7 +96,7 @@
     a.driver = S.demo ? new Driver.DemoDriver() : u ? new Driver.RealDriver(u.api, u.ws, u.lamp) : null;
     Object.assign(a, { link: a.driver ? 'unknown' : 'none', err: '', pos: {}, lampKey: '', lampErr: '' });
     if (!a.driver) { render(); return; }
-    if (S.demo || S.transport === 'ws') a.driver.connect();
+    if (S.demo) a.driver.connect(); // движения игры — только POST /pos/set-paint, WebSocket не нужен
     const my = a.gen;
     const poll = async () => {
       if (my !== a.gen) return;
@@ -146,7 +146,7 @@
         const s = plan[i];
         Object.assign(active, { i, label: s.label });
         renderProgress();
-        await a.driver.move({ x: s.x, z: s.z, angel: s.angel, pov_gripper: s.pov_gripper, gripper_state: s.grip }, S.transport);
+        await a.driver.movePaint({ x: s.x, z: s.z, angel: s.angel, pov_gripper: s.pov_gripper, paint_pov: s.paint_pov });
         a.last = s;
       }
     } finally {
@@ -798,7 +798,6 @@
 
   function fillForm() {
     $$('[data-d]').forEach((el) => { if (document.activeElement !== el) el.value = S.dev[el.dataset.d] || ''; });
-    $$('#transport button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.v === S.transport)));
     $('#demo').checked = S.demo;
     $('#lamps-on').checked = S.lamps;
     $$('#edit-side button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.v === S.edit)));
@@ -809,7 +808,6 @@
       el.value = Math.round(+cal[el.dataset.k] * sc * 10) / 10;
     });
     $$('#cal-side button').forEach((b) => b.setAttribute('aria-checked', String(+b.dataset.v === +cal.side)));
-    $$('#cal-grip button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.v === String(!!cal.grip))));
     renderFix();
     renderChecks();
   }
@@ -866,12 +864,6 @@
     out.innerHTML = lines.map(([t, ok]) => '<li class="' + (ok ? 'ok' : '') + '">' + (ok ? '✓ ' : '✗ ') + esc(t) + '</li>').join('');
   });
 
-  $('#transport').addEventListener('click', (e) => {
-    const b = e.target.closest('button[data-v]');
-    if (!b) return;
-    S.transport = b.dataset.v;
-    save(); fillForm(); startArms();
-  });
   $('#demo').addEventListener('change', (e) => {
     if (active) { e.target.checked = S.demo; toast('Дождитесь окончания движения'); return; }
     S.demo = e.target.checked;
@@ -891,10 +883,6 @@
   $('#cal-side').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-v]');
     if (b) { S.cal[S.edit].side = +b.dataset.v; save(); fillForm(); }
-  });
-  $('#cal-grip').addEventListener('click', (e) => {
-    const b = e.target.closest('button[data-v]');
-    if (b) { S.cal[S.edit].grip = b.dataset.v === 'true'; save(); fillForm(); }
   });
   $$('[data-k]').forEach((el) => {
     el.addEventListener('input', () => {
