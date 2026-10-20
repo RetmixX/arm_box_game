@@ -1,6 +1,7 @@
 /*
  * ARM·BOX — крестики-нолики двумя руками-манипуляторами.
- * Игроки нажимают клетки на экране, рука игрока рисует знак маркером на листе.
+ * Игроки нажимают клетки на экране, рука игрока берёт фигурку из своего лотка и ставит в клетку.
+ * После партии руки убирают фигурки обратно в лотки.
  * Зависит от window.Kin (kinematics.js), window.Driver (driver.js), window.TTT (ttt.js).
  */
 (function () {
@@ -32,9 +33,19 @@
     speed: 30, // %, POST /api/motors/speed — обе руки
     score: { X: 0, O: 0, D: 0 },
     cal: { X: TTT.defaultCal('X'), O: TTT.defaultCal('O') },
+    tray: TTT.emptyTray(), // где фигурки: в гнезде, в клетке, в схвате
     edit: 'X',
     page: 'play',
   });
+
+  const droppedFor = []; // руки, у которых удалены цепочки рисования маркером
+  function loadCal(side, saved) {
+    const m = TTT.migrateCal(saved);
+    if (m.dropped) droppedFor.push(side);
+    const cal = Object.assign(TTT.defaultCal(side), m.cal);
+    if (!Array.isArray(cal.slots)) cal.slots = TTT.defaultCal(side).slots;
+    return cal;
+  }
 
   function loadSettings() {
     const d = DEFAULTS();
@@ -42,15 +53,11 @@
     const out = Object.assign(d, s);
     out.dev = Object.assign(d.dev, s.dev);
     out.score = Object.assign({ X: 0, O: 0, D: 0 }, s.score);
+    out.tray = TTT.normalizeTray(s.tray);
     out.cal = {};
-    SIDES.forEach((side) => {
-      const m = TTT.migrateCal(s.cal && s.cal[side]);
-      out.cal[side] = Object.assign(TTT.defaultCal(side), m.cal);
-      if (m.touchReset) touchResetFor.push(side);
-    });
+    SIDES.forEach((side) => { out.cal[side] = loadCal(side, s.cal && s.cal[side]); });
     return out;
   }
-  const touchResetFor = []; // руки, у которых старое касание z = 20 поднято под маркер 60 мм
   const S = loadSettings();
   if (/[?&]demo\b/.test(location.search)) S.demo = true;
   const save = () => write(KEY, S);
@@ -100,7 +107,7 @@
     a.driver = S.demo ? new Driver.DemoDriver() : u ? new Driver.RealDriver(u.api, u.ws, u.lamp) : null;
     Object.assign(a, { link: a.driver ? 'unknown' : 'none', err: '', pos: {}, lampKey: '', lampErr: '', speedApplied: null, speedErr: '' });
     if (!a.driver) { render(); return; }
-    if (S.demo) a.driver.connect(); // движения игры — только POST /pos/set-paint, WebSocket не нужен
+    if (S.demo) a.driver.connect(); // движения игры — только POST /pos/set (REST), WebSocket не нужен
     const my = a.gen;
     const poll = async () => {
       if (my !== a.gen) return;
@@ -125,7 +132,7 @@
   const startArms = () => SIDES.forEach(startArm);
   const armReady = (side) => !!arms[side].driver && (S.demo || arms[side].link === 'online');
 
-  /** Обе руки работают над одним листом — двигаем строго по очереди */
+  /** Обе руки работают над одним полем — двигаем строго по очереди */
   let chain = Promise.resolve();
   function enqueue(fn) {
     const job = chain.then(fn);
@@ -135,23 +142,34 @@
 
   let active = null; // { side, i, n, label, title }
 
+  /** Фигурка сменила место (поза плана с trayTo пройдена) — запоминаем сразу: страницу могут закрыть */
+  function setTray(side, slot, to) {
+    S.tray[side][slot] = to;
+    save();
+    dirty = true;
+  }
+
+  /** Ошибка до первой команды: рука не двигалась, фигурка на месте */
+  const before = (msg) => Object.assign(new Error(msg), { notStarted: true });
+
   async function runPlan(side, plan, title) {
     const a = arms[side];
-    if (!a.driver) throw new Error('Рука ' + SIGN[side] + ' не настроена — укажите её адрес на вкладке «Настройка»');
-    if (!armReady(side)) throw new Error('Рука ' + SIGN[side] + ' не отвечает (' + armAddr(side) + ')' + (a.err ? ': ' + a.err : ''));
-    // переезд к другой клетке или на стоянку — сначала вертикально вверх на высоту подхода,
-    // чтобы база не поворачивалась, пока маркер низко над листом
-    const up = Math.round(TTT.heights(S.cal[side]).approach);
-    if (a.last && plan.length && plan[0].cell !== a.last.cell && a.last.z < up) {
-      plan = [Object.assign({}, a.last, { z: up, label: 'вверх перед переездом' })].concat(plan);
+    if (!a.driver) throw before('Рука ' + SIGN[side] + ' не настроена — укажите её адрес на вкладке «Настройка»');
+    if (!armReady(side)) throw before('Рука ' + SIGN[side] + ' не отвечает (' + armAddr(side) + ')' + (a.err ? ': ' + a.err : ''));
+    // переезд к другой клетке, гнезду или на стоянку — сначала вертикально вверх на высоту проезда,
+    // чтобы база не поворачивалась, пока схват низко над полем
+    const H = Math.round(+S.cal[side].zSafe);
+    const l = a.last;
+    if (l && plan.length && plan[0].target !== l.target && l.z < H) {
+      plan = [{ x: l.x, z: H, angel: l.angel, pov_gripper: l.pov_gripper, closed: l.closed, gripper_state: l.gripper_state, target: l.target, label: 'вверх перед переездом' }].concat(plan);
     }
     // скорость: GET в backend нет — выставляем сами перед первым движением после подключения и после смены
     if (a.speedApplied !== S.speed) {
-      try { await applySpeed(side); } catch (e) { throw new Error('Рука ' + SIGN[side] + ': скорость ' + S.speed + ' % не выставлена — ' + e.message + '. Движение не начато'); }
+      try { await applySpeed(side); } catch (e) { throw before('Рука ' + SIGN[side] + ': скорость ' + S.speed + ' % не выставлена — ' + e.message + '. Движение не начато'); }
     }
     for (const step of plan) {
       const e = TTT.checkPose(step);
-      if (e) throw new Error('Калибровка руки ' + SIGN[side] + ': ' + step.label + ' — ' + e);
+      if (e) throw before('Рука ' + SIGN[side] + ': ' + step.label + ' — ' + e);
     }
     active = { side, i: 0, n: plan.length, label: plan[0].label, title };
     render();
@@ -160,8 +178,9 @@
         const s = plan[i];
         Object.assign(active, { i, label: s.label });
         renderProgress();
-        await a.driver.movePaint({ x: s.x, z: s.z, angel: s.angel, pov_gripper: s.pov_gripper, paint_pov: s.paint_pov });
+        await a.driver.move({ x: s.x, z: s.z, angel: s.angel, pov_gripper: s.pov_gripper, gripper_state: s.gripper_state }, 'rest');
         a.last = s;
+        if ('trayTo' in s) setTray(side, s.slot, s.trayTo);
       }
     } finally {
       active = null;
@@ -185,14 +204,37 @@
     }
   }
 
-  /** План знака: цепочка клетки (вкладка «Позиции») или расчёт; битая цепочка — ошибка до движения */
-  function markPlan(side, cell, withPark) {
-    const ce = TTT.checkChain(S.cal[side], cell);
-    if (ce) throw new Error('Рука ' + SIGN[side] + ', цепочка клетки ' + TTT.cellName(cell) + ': ' + ce + '. Исправьте на вкладке «Позиции»');
-    return TTT.drawPlan(S.cal[side], cell, side, withPark);
+  /** Цепочка обязана быть записана и пройти проверку — иначе ход не начинается */
+  function needChain(side, kind, i) {
+    const cal = S.cal[side];
+    const name = kind === 'cell' ? 'клетки ' + TTT.cellName(i) : 'гнезда ' + (i + 1);
+    if (!TTT.chainOf(cal, kind, i)) throw before('Рука ' + SIGN[side] + ': у ' + name + ' нет цепочки — запишите её на вкладке «Позиции»');
+    const e = TTT.checkChain(cal, kind, i);
+    if (e) throw before('Рука ' + SIGN[side] + ', цепочка ' + name + ': ' + e + '. Исправьте на вкладке «Позиции»');
   }
 
-  const drawMark = (side, cell) => enqueue(() => runPlan(side, markPlan(side, cell, true), 'рисует ' + SIGN[side] + ' в ' + TTT.cellName(cell)));
+  /** Взять фигурку из лотка (или ту, что уже в схвате) и поставить в клетку */
+  function placePiece(side, cell) {
+    return enqueue(async () => {
+      const { slot, inHand } = TTT.nextSlot(S.tray[side]);
+      if (slot < 0) throw before('Лоток руки ' + SIGN[side] + ' пуст — все фигурки на поле. Начните новую партию');
+      if (!inHand) needChain(side, 'slot', slot);
+      needChain(side, 'cell', cell);
+      await runPlan(side, TTT.movePlan(S.cal[side], slot, cell, { inHand }), 'ставит ' + SIGN[side] + ' в ' + TTT.cellName(cell));
+    });
+  }
+
+  /** Фигурка из схвата — обратно в её гнездо (отмена хода, уборка) */
+  function returnHand(side) {
+    return enqueue(async () => {
+      const slot = S.tray[side].indexOf('hand');
+      if (slot < 0) return;
+      needChain(side, 'slot', slot);
+      await runPlan(side, TTT.returnPlan(S.cal[side], null, slot), 'возвращает ' + SIGN[side] + ' в гнездо ' + (slot + 1));
+    });
+  }
+
+  const piecesOut = () => SIDES.some((side) => S.tray[side].some((v) => v !== null));
 
   /* ================================ лампы ================================ */
 
@@ -220,12 +262,13 @@
 
   function lampFor(side) {
     const on = (...c) => Object.assign({}, LAMP_OFF, Object.fromEntries(c.map((k) => [k, true])));
+    if (active && active.side === side) return on('blue');
     if (partyOn(side)) return on(...PARTY[Math.floor((Date.now() - game.party.start) / PARTY_STEP_MS) % PARTY.length]);
     if (game.res) return game.res.draw ? on('yellow') : on(game.res.side === side ? 'green' : 'red');
-    if ((active && active.side === side) || (game.pending && game.pending.side === side)) return on('blue');
+    if (game.pending && game.pending.side === side) return on('blue');
     if (game.error && game.error.side === side) return on('red');
     if (game.thinking && robotSide() === side) return on('yellow');
-    if (!game.pending && !game.thinking && !game.error && TTT.turnOf(game.board) === side) return on('green');
+    if (!game.pending && !game.thinking && !game.error && !game.cleaning && TTT.turnOf(game.board) === side) return on('green');
     return Object.assign({}, LAMP_OFF);
   }
 
@@ -257,12 +300,19 @@
 
   /* ================================ игра ================================ */
 
-  const game = { id: 0, board: Array(9).fill(null), res: null, pending: null, thinking: false, error: null, party: null, fresh: new Set() };
+  // error: { kind: 'move', cell, side, msg } — ход сорвался; { kind: 'clean', side, msg } — уборка сорвалась
+  const game = { id: 0, board: Array(9).fill(null), res: null, pending: null, thinking: false, error: null, cleaning: false, party: null, fresh: new Set() };
+
+  // фигурки остались на поле с прошлого раза — продолжаем ту же партию (счёт уже записан)
+  if (S.physical) {
+    const b = TTT.boardFromTray(S.tray);
+    if (b && b.some(Boolean)) { game.board = b; game.res = TTT.result(b); }
+  }
 
   const robotSide = () => (S.mode === 'pvr' ? TTT.other(S.human) : null);
   const playerOf = (side) => (S.mode === 'pvr' && side !== S.human ? 'robot' : 'human');
   const nameOf = (side) => (S.mode === 'pvr' ? (side === S.human ? 'Вы' : 'Робот') : 'Игрок ' + SIGN[side]);
-  const gameBusy = () => !!(game.pending || game.thinking || game.error);
+  const gameBusy = () => !!(game.pending || game.thinking || game.error || game.cleaning);
   const turnSide = () => TTT.turnOf(game.board);
 
   function canClick(i) {
@@ -275,13 +325,19 @@
     game.pending = { cell, side };
     render();
     try {
-      await drawMark(side, cell);
+      await placePiece(side, cell);
       if (id !== game.id) return;
       commit(cell, side);
     } catch (e) {
       if (id !== game.id) return;
       game.pending = null;
-      game.error = { cell, side, msg: e.message };
+      // фигурка уже отпущена в клетке — сорвался подъём или стоянка: ход сделан, рука уйдёт вверх перед следующим
+      if (S.tray[side].includes(cell)) {
+        toast('Рука ' + SIGN[side] + ' поставила фигурку, но не ушла на стоянку: ' + e.message);
+        commit(cell, side);
+        return;
+      }
+      game.error = { kind: 'move', cell, side, msg: e.message, notStarted: !!e.notStarted };
       render();
     }
   }
@@ -323,16 +379,51 @@
     robotTurn();
   }
 
-  /** Новая партия; на бумаге уже что-то нарисовано — просим положить новый лист */
+  /** Руки возвращают все фигурки с поля (и из схвата) в их гнёзда; false — сорвалось, причина в game.error */
+  async function cleanup() {
+    game.cleaning = true;
+    game.error = null;
+    render();
+    let side = SIDES[0];
+    try {
+      for (side of SIDES) {
+        let moved = false;
+        for (let k = 0; k < TTT.SLOTS; k++) {
+          const v = S.tray[side][k];
+          if (v === null) continue;
+          await enqueue(async () => {
+            if (v !== 'hand') needChain(side, 'cell', v);
+            needChain(side, 'slot', k);
+            const from = v === 'hand' ? 'из схвата' : 'из ' + TTT.cellName(v);
+            await runPlan(side, TTT.returnPlan(S.cal[side], v === 'hand' ? null : v, k, { park: false }), 'убирает ' + SIGN[side] + ' ' + from + ' в гнездо ' + (k + 1));
+          });
+          if (v !== 'hand' && game.board[v] === side) { game.board[v] = null; render(); }
+          moved = true;
+        }
+        if (moved) await enqueue(() => runPlan(side, [TTT.park(S.cal[side])], 'на стоянку'));
+      }
+      return true;
+    } catch (e) {
+      game.error = { kind: 'clean', side, msg: e.message };
+      return false;
+    } finally {
+      game.cleaning = false;
+      render();
+    }
+  }
+
+  /** Новая партия; на поле фигурки — руки уберут их в лотки (или человек уберёт сам) */
   async function newGame() {
-    if (game.pending || active) { toast('Дождитесь, пока рука закончит рисовать'); return false; }
-    const used = game.board.some(Boolean);
-    if (S.physical && used) {
+    if (game.pending || active || game.cleaning) { toast('Дождитесь, пока рука закончит'); return false; }
+    if (piecesOut()) {
       const dlg = $('#dlg-new');
       dlg.returnValue = '';
       dlg.showModal();
       const v = await new Promise((r) => dlg.addEventListener('close', () => r(dlg.returnValue), { once: true }));
-      if (v !== 'ok') return false;
+      if (v === 'manual') {
+        S.tray = TTT.emptyTray();
+        save();
+      } else if (v !== 'arms' || !(await cleanup())) return false;
     }
     resetGame();
     return true;
@@ -346,7 +437,7 @@
     el.textContent = text;
     el.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { el.hidden = true; }, 3600);
+    toastTimer = setTimeout(() => { el.hidden = true; }, Math.max(3600, text.length * 60));
   }
 
   const MARK_SVG = {
@@ -378,7 +469,7 @@
     cells.forEach((c, i) => {
       const v = game.board[i];
       const pend = game.pending && game.pending.cell === i ? game.pending.side : null;
-      const err = game.error && game.error.cell === i ? game.error.side : null;
+      const err = game.error && game.error.kind === 'move' && game.error.cell === i ? game.error.side : null;
       const can = canClick(i);
       let want;
       if (v) want = 'v' + v + (game.fresh.has(i) ? '!' : '');
@@ -415,36 +506,53 @@
     const mark = $('#turn-mark'), title = $('#turn-title'), text = $('#turn-text');
     const side = turnSide();
     mark.className = 'turn-mark';
+    if (game.cleaning) {
+      mark.textContent = active ? SIGN[active.side] : '…';
+      if (active && active.side === 'X') mark.classList.add('x');
+      mark.classList.add('pulse');
+      title.textContent = 'Руки убирают фигурки';
+      text.textContent = 'Обратно в лотки — потом новая партия';
+      return;
+    }
+    if (game.error && game.error.kind === 'clean') {
+      mark.textContent = SIGN[game.error.side];
+      if (game.error.side === 'X') mark.classList.add('x');
+      title.textContent = 'Фигурки убраны не все';
+      text.textContent = 'Выберите, что делать дальше';
+      return;
+    }
     if (game.res) {
       if (game.res.draw) {
         mark.textContent = '='; mark.classList.add('draw');
         title.textContent = 'Ничья';
-        text.textContent = 'Новая партия — на новом листе';
       } else {
         const w = game.res.side;
         mark.textContent = SIGN[w]; mark.classList.add('done');
         title.textContent = S.mode === 'pvr' ? (w === S.human ? 'Вы победили!' : 'Победил робот') : 'Победа ' + SIGN[w];
-        text.textContent = S.mode === 'pvr' && w !== S.human ? 'Попробуйте ещё раз или выберите уровень полегче' : 'Три в ряд — ' + game.res.line.map(TTT.cellName).join(', ');
       }
+      const lost = !game.res.draw && S.mode === 'pvr' && game.res.side !== S.human;
+      text.textContent = lost ? 'Попробуйте ещё раз или выберите уровень полегче'
+        : !game.res.draw ? 'Три в ряд — ' + game.res.line.map(TTT.cellName).join(', ')
+          : S.physical ? 'Новая партия — руки уберут фигурки в лотки' : 'Начните новую партию';
       return;
     }
     const s = game.pending ? game.pending.side : game.error ? game.error.side : side;
     mark.textContent = SIGN[s];
     if (s === 'X') mark.classList.add('x');
     if (game.error) {
-      title.textContent = 'Ход ' + SIGN[s] + ' не нарисован';
+      title.textContent = 'Ход ' + SIGN[s] + ' не сделан';
       text.textContent = 'Выберите, что делать дальше';
     } else if (game.pending) {
       mark.classList.add('pulse');
-      title.textContent = 'Рука ' + SIGN[s] + ' рисует';
-      text.textContent = 'Клетка ' + TTT.cellName(game.pending.cell) + ' · ' + (S.mode === 'pvr' ? (s === S.human ? 'ваш ход' : 'ход робота') : 'игрок ' + SIGN[s]);
+      title.textContent = game.pending.back ? 'Рука ' + SIGN[s] + ' возвращает фигурку' : 'Рука ' + SIGN[s] + ' ставит фигурку';
+      text.textContent = (game.pending.back ? 'В лоток' : 'Клетка ' + TTT.cellName(game.pending.cell)) + ' · ' + (S.mode === 'pvr' ? (s === S.human ? 'ваш ход' : 'ход робота') : 'игрок ' + SIGN[s]);
     } else if (game.thinking) {
       mark.classList.add('pulse');
       title.textContent = 'Робот думает';
       text.textContent = 'Уровень: ' + TTT.LEVELS[S.level].name.toLowerCase();
     } else {
       title.textContent = S.mode === 'pvr' ? (playerOf(s) === 'human' ? 'Ваш ход' : 'Ход робота') : 'Ход ' + SIGN[s];
-      text.textContent = testing ? 'Идёт проверка руки на вкладке «Настройка»' : 'Выберите клетку · клавиши 1–9';
+      text.textContent = testing ? 'Рука занята проверкой на вкладке «Настройка» или «Позиции»' : 'Выберите клетку · клавиши 1–9';
     }
   }
 
@@ -461,8 +569,23 @@
     const e = game.error;
     $('#alert').hidden = !e;
     if (!e) return;
-    $('#alert-title').textContent = 'Рука ' + SIGN[e.side] + ' не нарисовала ' + SIGN[e.side] + ' в ' + TTT.cellName(e.cell);
-    $('#alert-text').textContent = e.msg + '. Проверьте лист: если знак всё-таки нарисован, засчитайте ход.';
+    if (e.kind === 'clean') {
+      $('#alert-title').textContent = 'Рука ' + SIGN[e.side] + ' не убрала фигурки';
+      $('#alert-text').textContent = e.msg + '. Можно повторить или убрать оставшиеся фигурки руками и разложить по гнёздам.';
+      $('#err-retry').textContent = 'Повторить уборку';
+      $('#err-accept').textContent = 'Убрал сам — новая партия';
+      $('#err-accept').hidden = false;
+      $('#err-cancel').textContent = 'Закрыть';
+      $('#err-cancel').hidden = false;
+      return;
+    }
+    const hand = S.tray[e.side].includes('hand');
+    $('#alert-title').textContent = 'Рука ' + SIGN[e.side] + ' не поставила ' + SIGN[e.side] + ' в ' + TTT.cellName(e.cell);
+    $('#alert-text').textContent = e.msg.replace(/\.$/, '') + '. ' + (e.notStarted ? 'Рука не двигалась.' : (hand ? 'Фигурка, похоже, в схвате. ' : '') + 'Если фигурка всё-таки стоит в клетке, засчитайте ход.');
+    $('#err-retry').textContent = 'Повторить';
+    $('#err-accept').textContent = 'Фигурка стоит — засчитать';
+    $('#err-accept').hidden = !!e.notStarted;
+    $('#err-cancel').textContent = hand ? 'Отменить ход — вернуть в лоток' : 'Отменить ход';
     $('#err-cancel').hidden = playerOf(e.side) === 'robot';
   }
 
@@ -476,6 +599,12 @@
     return { cls: '', text: 'подключение…' };
   }
 
+  function trayText(side) {
+    const t = S.tray[side];
+    const inSlots = t.filter((v) => v === null).length;
+    return 'лоток ' + inSlots + '/' + TTT.SLOTS + (t.includes('hand') ? ' · фигурка в схвате' : '');
+  }
+
   function renderArms() {
     const role = (side) => (S.mode === 'pvr' ? (side === S.human ? 'ваша' : 'робота') : 'игрока ' + SIGN[side]);
     $('#arm-cards').innerHTML = SIDES.map((side) => {
@@ -483,7 +612,7 @@
       const a = arms[side];
       const lamp = ['red', 'yellow', 'green', 'blue'].map((c) => '<i class="' + (a.lamp[c] ? 'on' : '') + '" style="--c:var(--l-' + c + ')"></i>').join('');
       return '<div class="arm"><span class="arm-mark ' + (side === 'X' ? 'x' : '') + '">' + SIGN[side] + '</span>' +
-        '<div><div class="arm-name">Рука ' + role(side) + '</div><div class="arm-sub ' + (st.bad ? 'bad' : '') + '" title="' + esc(a.err) + '">' + esc(st.text) + '</div></div>' +
+        '<div><div class="arm-name">Рука ' + role(side) + '</div><div class="arm-sub ' + (st.bad ? 'bad' : '') + '" title="' + esc(a.err) + '">' + esc(st.text) + ' · ' + esc(trayText(side)) + '</div></div>' +
         '<span class="lamp ' + (a.lampErr ? 'err' : '') + '" title="' + esc(a.lampErr ? 'Лампа ' + lampAddr(side) + ': ' + a.lampErr : 'Лампа ' + (S.demo ? 'демо' : lampAddr(side) || '—')) + '">' + lamp + '</span></div>';
     }).join('');
     SIDES.forEach((side) => {
@@ -493,7 +622,7 @@
       el.title = st.text;
     });
   }
-  const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const esc = (s) => String(s === undefined || s === null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
   function renderSetupControls() {
     $$('#mode button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.v === S.mode)));
@@ -503,7 +632,7 @@
     $('#physical').checked = S.physical;
     SIDES.forEach((side) => { $('#sc-' + side).textContent = S.score[side]; $('#sc-' + side + '-name').textContent = nameOf(side); });
     $('#sc-D').textContent = S.score.D;
-    $('#new-game').disabled = !!(game.pending || active);
+    $('#new-game').disabled = !!(game.pending || active || game.cleaning);
   }
 
   function render() {
@@ -531,9 +660,45 @@
   boardEl.addEventListener('mouseenter', () => boardEl.classList.add('show-keys'));
   boardEl.addEventListener('mouseleave', () => boardEl.classList.remove('show-keys'));
 
-  $('#err-retry').addEventListener('click', () => { const e = game.error; if (!e) return; game.error = null; makeMove(e.cell, e.side); });
-  $('#err-accept').addEventListener('click', () => { const e = game.error; if (e) commit(e.cell, e.side); });
-  $('#err-cancel').addEventListener('click', () => { game.error = null; render(); });
+  $('#err-retry').addEventListener('click', async () => {
+    const e = game.error;
+    if (!e) return;
+    game.error = null;
+    if (e.kind === 'clean') { if (await cleanup()) resetGame(); return; }
+    makeMove(e.cell, e.side); // фигурка в схвате — рука сразу понесёт её к клетке
+  });
+  $('#err-accept').addEventListener('click', () => {
+    const e = game.error;
+    if (!e) return;
+    if (e.kind === 'clean') { S.tray = TTT.emptyTray(); save(); resetGame(); return; }
+    // человек видит фигурку в клетке: она из схвата или из первого полного гнезда
+    const t = S.tray[e.side];
+    if (!t.includes(e.cell)) {
+      const { slot } = TTT.nextSlot(t);
+      if (slot >= 0) setTray(e.side, slot, e.cell);
+    }
+    commit(e.cell, e.side);
+  });
+  $('#err-cancel').addEventListener('click', async () => {
+    const e = game.error;
+    if (!e) return;
+    game.error = null;
+    if (e.kind === 'clean' || !S.tray[e.side].includes('hand')) { render(); return; }
+    const id = game.id;
+    game.pending = { cell: e.cell, side: e.side, back: true };
+    render();
+    try {
+      await returnHand(e.side);
+      if (id !== game.id) return;
+      game.pending = null;
+      render();
+    } catch (err) {
+      if (id !== game.id) return;
+      game.pending = null;
+      game.error = Object.assign({}, e, { msg: 'Не удалось вернуть фигурку в лоток: ' + err.message });
+      render();
+    }
+  });
 
   $('#new-game').addEventListener('click', () => newGame());
   $('#score-reset').addEventListener('click', () => { S.score = { X: 0, O: 0, D: 0 }; save(); render(); });
@@ -543,7 +708,7 @@
     if (S[key] === value) return;
     const prev = S[key];
     S[key] = value;
-    if (game.board.some(Boolean) || gameBusy()) {
+    if (game.board.some(Boolean) || gameBusy() || piecesOut()) {
       if (!(await newGame())) { S[key] = prev; render(); return; }
     } else resetGame();
     save();
@@ -560,7 +725,12 @@
     if (b) { S.level = b.dataset.v; save(); render(); }
   });
   $('#physical').addEventListener('change', (e) => {
-    if (game.pending || active) { e.target.checked = S.physical; toast('Дождитесь, пока рука закончит рисовать'); return; }
+    // посреди партии фигурки на поле разошлись бы с ходами на экране
+    if (game.pending || active || game.cleaning || (game.board.some(Boolean) && !game.res)) {
+      e.target.checked = S.physical;
+      toast('Переключайте между партиями — сейчас на поле идёт игра');
+      return;
+    }
     S.physical = e.target.checked;
     save();
     render();
@@ -586,22 +756,25 @@
     dirty = true;
   }
 
-  /** Кончик руки (маркер) в координатах поля: из телеметрии или последней команды */
+  /** Середина схвата в координатах поля и закрыт ли схват: из телеметрии или последней команды */
   function tipOf(side) {
     const a = arms[side];
     const cal = S.cal[side];
-    let x, z, angle;
+    const l = a.last || TTT.park(cal);
+    let x = l.x, z = l.z, angle = l.angel, closed = l.closed;
     if ([1, 2, 3].every((i) => Number.isFinite(a.pos[i]))) {
       const pose = Kin.poseFromTicks(a.pos);
       const t = Kin.joints(pose).t;
       x = t.x; z = t.z; angle = pose.angle;
-    } else {
-      const l = a.last || TTT.park(cal);
-      x = l.x; z = l.z; angle = l.angel;
+    }
+    if (Number.isFinite(a.pos[6])) {
+      // 370 / 710 — тики схвата для gripper_state true / false; с фигуркой схват не дожимает до конца
+      const closedTick = TTT.gripState(cal, true) ? 370 : 710;
+      closed = Math.abs(a.pos[6] - closedTick) < 170;
     }
     const uv = TTT.polarToArm(x, angle);
     const b = TTT.armToBoard(uv.u, uv.v, cal);
-    return { bx: b.bx, by: b.by, z };
+    return { bx: b.bx, by: b.by, z, closed };
   }
 
   function stepViews(dt) {
@@ -615,8 +788,18 @@
         const d = t[key] - v[key];
         if (Math.abs(d) > 0.05) { v[key] += d * k; moving = true; } else v[key] = t[key];
       }
+      if (v.closed !== t.closed) { v.closed = t.closed; moving = true; }
     });
     return moving;
+  }
+
+  /** Нижняя точка цепочки в координатах поля — где стоит фигурка */
+  function bottomOnBoard(side, kind, i) {
+    const cal = S.cal[side];
+    const b = TTT.chainBottom(cal, kind, i);
+    if (!b) return null;
+    const uv = TTT.polarToArm(+b.x, +b.angel);
+    return TTT.armToBoard(uv.u, uv.v, cal);
   }
 
   function drawTable(cv, setup) {
@@ -631,10 +814,14 @@
 
     const edit = S.edit;
     const pitch = +S.cal[setup ? edit : 'X'].pitch;
-    const bases = {};
-    SIDES.forEach((side) => { bases[side] = TTT.armToBoard(0, 0, S.cal[side]); });
-    // рамка мира: поле и обе базы
+    const bases = {}, slots = {};
+    SIDES.forEach((side) => {
+      bases[side] = TTT.armToBoard(0, 0, S.cal[side]);
+      slots[side] = Array.from({ length: TTT.SLOTS }, (_, k) => bottomOnBoard(side, 'slot', k));
+    });
+    // рамка мира: поле, обе базы, гнёзда лотков
     const pts = [{ bx: -1.5 * pitch, by: -1.5 * pitch }, { bx: 1.5 * pitch, by: 1.5 * pitch }, bases.X, bases.O];
+    SIDES.forEach((side) => slots[side].forEach((q) => q && pts.push(q)));
     if (setup) SIDES.forEach((side) => { const c = S.cal[side]; const uv = TTT.polarToArm(+c.parkX, +c.parkAngel); pts.push(TTT.armToBoard(uv.u, uv.v, c)); });
     const minX = Math.min(...pts.map((q) => q.bx)) - 40, maxX = Math.max(...pts.map((q) => q.bx)) + 40;
     const minY = Math.min(...pts.map((q) => q.by)) - 40, maxY = Math.max(...pts.map((q) => q.by)) + 40;
@@ -644,26 +831,26 @@
     const oy = (r.height + (maxY - minY) * s) / 2 + minY * s;
     const X = (bx) => ox + bx * s, Y = (by) => oy - by * s;
 
-    // лист с полем
+    // поле
     const half = 1.5 * pitch;
     g.fillStyle = C.alu;
     g.beginPath();
     if (g.roundRect) g.roundRect(X(-half - 12), Y(half + 12), (2 * half + 24) * s, (2 * half + 24) * s, 6);
     else g.rect(X(-half - 12), Y(half + 12), (2 * half + 24) * s, (2 * half + 24) * s);
     g.fill();
+    let chk = null;
     if (setup) {
-      const chk = TTT.checkCalibration(S.cal[edit]).cells;
+      // клетки настраиваемой руки: точка — куда рука ставит фигурку, красная клетка — битая цепочка
+      chk = TTT.checkCalibration(S.cal[edit], edit);
       for (let i = 0; i < 9; i++) {
-        // куда реально встанет кончик маркера (поправка клетки, смещение маркера, округление команды)
-        const o = TTT.cellPlan(S.cal[edit], i, false)[0];
-        const ax = TTT.polarToArm(o.x, o.angel);
-        const tip = TTT.axisToTip(ax.u, ax.v, S.cal[edit]);
-        const c = TTT.armToBoard(tip.u, tip.v, S.cal[edit]);
-        g.fillStyle = chk[i] ? C.bad : C.signal;
-        g.globalAlpha = chk[i] ? 0.25 : 1;
-        if (chk[i]) g.fillRect(X(c.bx - pitch / 2) + 1, Y(c.by + pitch / 2) + 1, pitch * s - 2, pitch * s - 2);
-        else { g.beginPath(); g.arc(X(c.bx), Y(c.by), 3, 0, Math.PI * 2); g.fill(); }
-        g.globalAlpha = 1;
+        const c = TTT.cellBoard(i, pitch);
+        if (chk.cells[i]) {
+          g.fillStyle = C.bad; g.globalAlpha = 0.25;
+          g.fillRect(X(c.bx - pitch / 2) + 1, Y(c.by + pitch / 2) + 1, pitch * s - 2, pitch * s - 2);
+          g.globalAlpha = 1;
+        }
+        const q = bottomOnBoard(edit, 'cell', i);
+        if (q) { g.fillStyle = chk.cells[i] ? C.bad : C.signal; g.beginPath(); g.arc(X(q.bx), Y(q.by), 3, 0, Math.PI * 2); g.fill(); }
       }
     }
     g.strokeStyle = C.rule;
@@ -675,25 +862,44 @@
     }
     g.stroke();
 
-    // знаки на листе — ровно теми штрихами, что рисует рука
-    const strokeMark = (i, side, alpha) => {
+    // фигурка: ✕ — оранжевая, ○ — тёмная
+    const piece = (q, side, alpha, R) => {
       g.globalAlpha = alpha;
-      g.strokeStyle = side === 'X' ? C.signal : C.ink;
-      g.lineWidth = Math.max(1.5, 2.2 * s);
-      g.lineCap = 'round'; g.lineJoin = 'round';
-      for (const st of TTT.markStrokes(i, side, S.cal[side])) {
-        g.beginPath();
-        st.forEach((q, k) => (k ? g.lineTo(X(q.bx), Y(q.by)) : g.moveTo(X(q.bx), Y(q.by))));
-        g.stroke();
-      }
+      g.beginPath(); g.arc(X(q.bx), Y(q.by), R, 0, Math.PI * 2);
+      g.fillStyle = side === 'X' ? C.signal : C.ink; g.fill();
+      g.fillStyle = side === 'X' ? '#fff' : C.alu;
+      g.font = '600 ' + Math.round(R * 1.1) + 'px Unbounded, Onest, sans-serif';
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText(SIGN[side], X(q.bx), Y(q.by) + 1);
       g.globalAlpha = 1;
     };
+    const R = Math.max(7, pitch * 0.32 * s);
     if (!setup) {
-      game.board.forEach((v, i) => v && strokeMark(i, v, 1));
-      if (game.pending) strokeMark(game.pending.cell, game.pending.side, 0.25);
-    } else {
-      strokeMark(+$('#t-cell').value || 4, edit, 0.35);
+      game.board.forEach((v, i) => v && piece(TTT.cellBoard(i, pitch), v, 1, R));
+      if (game.pending && !game.pending.back) piece(TTT.cellBoard(game.pending.cell, pitch), game.pending.side, 0.25, R);
     }
+
+    // лотки: полное гнездо — фигурка, пустое — кольцо
+    const r2 = Math.max(5, pitch * 0.22 * s);
+    SIDES.forEach((side) => {
+      slots[side].forEach((q, k) => {
+        if (!q) return;
+        const dim = setup && side !== edit;
+        const bad = setup && side === edit && chk.slots[k];
+        if (S.tray[side][k] === null) piece(q, side, dim ? 0.3 : 1, r2);
+        g.globalAlpha = dim ? 0.3 : 1;
+        g.strokeStyle = bad ? C.bad : C.steel;
+        g.lineWidth = 1.5;
+        g.beginPath(); g.arc(X(q.bx), Y(q.by), r2 + 3, 0, Math.PI * 2); g.stroke();
+        if (setup) {
+          g.fillStyle = C.steel;
+          g.font = '500 11px Onest, sans-serif';
+          g.textAlign = 'center'; g.textBaseline = 'middle';
+          g.fillText(String(k + 1), X(q.bx), Y(q.by) - r2 - 10);
+        }
+        g.globalAlpha = 1;
+      });
+    });
 
     // руки
     SIDES.forEach((side) => {
@@ -717,24 +923,23 @@
         g.lineWidth = 1.5;
         g.strokeRect(X(pk.bx) - 5, Y(pk.by) - 5, 10, 10);
       }
-      // звено: от базы к маркеру
+      // звено: от базы к схвату
       const v = arms[side].view || tipOf(side);
-      const down = v.z <= +cal.zDraw + 4;
       g.strokeStyle = focus ? C.signal : C.steel;
       g.lineWidth = Math.max(6, 22 * s);
       g.lineCap = 'round';
       g.beginPath(); g.moveTo(X(b.bx), Y(b.by)); g.lineTo(X(v.bx), Y(v.by)); g.stroke();
-      // маркер: закрашен — касается листа
+      // схват: закрашен — закрыт (держит фигурку)
       g.beginPath(); g.arc(X(v.bx), Y(v.by), Math.max(5, 9 * s), 0, Math.PI * 2);
-      g.fillStyle = down ? C.ink : C.plate;
+      g.fillStyle = v.closed ? C.ink : C.plate;
       g.fill();
       g.lineWidth = 2; g.strokeStyle = C.ink; g.stroke();
       // основание
-      const R = Math.max(14, 34 * s);
-      g.beginPath(); g.arc(X(b.bx), Y(b.by), R, 0, Math.PI * 2);
+      const RB = Math.max(14, 34 * s);
+      g.beginPath(); g.arc(X(b.bx), Y(b.by), RB, 0, Math.PI * 2);
       g.fillStyle = side === 'X' ? C.signal : C.ink; g.fill();
       g.fillStyle = side === 'X' ? '#fff' : C.alu;
-      g.font = '600 ' + Math.round(R * 0.9) + 'px Unbounded, Onest, sans-serif';
+      g.font = '600 ' + Math.round(RB * 0.9) + 'px Unbounded, Onest, sans-serif';
       g.textAlign = 'center'; g.textBaseline = 'middle';
       g.fillText(SIGN[side], X(b.bx), Y(b.by) + 1);
       g.globalAlpha = 1;
@@ -749,7 +954,7 @@
     const moving = stepViews(dt);
     if (moving || dirty) {
       if (S.page === 'play') drawTable($('#cv-table'), false);
-      else drawTable($('#cv-setup'), true);
+      else if (S.page === 'setup') drawTable($('#cv-setup'), true);
       dirty = false;
     }
     requestAnimationFrame(frame);
@@ -774,7 +979,7 @@
     $('#cam-empty').textContent = !camBase()
       ? 'Адрес камеры не задан — вкладка «Настройка»'
       : cam.error ? 'Камера не отвечает: ' + cam.error
-        : cam.running ? 'Подключаемся к потоку…' : 'Включите камеру, чтобы все видели лист';
+        : cam.running ? 'Подключаемся к потоку…' : 'Включите камеру, чтобы все видели поле';
   }
   function showStream() {
     const c = camera();
@@ -829,14 +1034,10 @@
   /* ============================== настройка ============================== */
 
   let testing = false;
+  const busyNow = () => testing || !!game.pending || !!active || game.cleaning;
 
   function renderTestState() {
-    const busy = testing || !!game.pending || !!active;
-    $$('[data-test], [data-fix]').forEach((b) => { b.disabled = busy; });
-    const cal = S.cal[S.edit];
-    const empty = (i) => { const f = TTT.cellFix(cal, i); return !f.x && !f.z && !f.a; };
-    $('#fix-reset').disabled = busy || empty(+$('#t-cell').value);
-    $('#fix-reset-all').disabled = Array.from({ length: 9 }, (_, i) => i).every(empty);
+    $$('[data-test]').forEach((b) => { b.disabled = busyNow(); });
     const el = $('#test-state');
     if (testing && active) el.textContent = 'Рука ' + SIGN[active.side] + ': ' + active.label + '…';
   }
@@ -849,27 +1050,24 @@
     const cal = S.cal[S.edit];
     $$('[data-k]').forEach((el) => {
       if (document.activeElement === el) return;
-      const sc = +el.dataset.scale || 1;
-      el.value = Math.round(+cal[el.dataset.k] * sc * 10) / 10;
+      el.value = Math.round(+cal[el.dataset.k] * 10) / 10;
     });
     $$('#cal-side button').forEach((b) => b.setAttribute('aria-checked', String(+b.dataset.v === +cal.side)));
-    renderFix();
+    $$('#grip-true button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.v === cal.gripTrue)));
+    $('#cal-reset').textContent = 'всю калибровку руки ' + SIGN[S.edit];
     renderSpeed();
     renderChecks();
   }
 
   function renderChecks() {
     const res = {};
-    SIDES.forEach((side) => { res[side] = TTT.checkCalibration(S.cal[side]); });
+    SIDES.forEach((side) => { res[side] = TTT.checkCalibration(S.cal[side], side); });
     const items = [];
     SIDES.forEach((side) => res[side].list.forEach((t) => items.push('<li>Рука ' + SIGN[side] + ' · ' + esc(t) + '</li>')));
     const todo = [];
-    SIDES.forEach((side) => res[side].todo.forEach((t) => todo.push('<li class="todo">Рука ' + SIGN[side] + ' · ' + esc(t) + '</li>')));
-    if (+S.cal.X.pitch !== +S.cal.O.pitch) items.push('<li>Шаг клетки у рук разный (' + S.cal.X.pitch + ' и ' + S.cal.O.pitch + ' мм) — лист один, шаг должен совпадать</li>');
-    if (!items.length) items.push('<li class="ok">Обе руки достают до всех клеток и стоянки</li>');
+    SIDES.forEach((side) => res[side].todo.forEach((t) => todo.push('<li class="todo">Рука ' + SIGN[side] + ' · ' + esc(t) + ' — вкладка «Позиции»</li>')));
+    if (!items.length && !todo.length) items.push('<li class="ok">Цепочки всех клеток и гнёзд записаны, обе руки достают до них и до стоянки</li>');
     $('#checks').innerHTML = items.concat(todo).join('');
-    const r = TTT.markerRadius(S.cal[S.edit]);
-    $('#marker-hint').dataset.r = r ? 'Круг ○ — диаметр ' + Math.round(2 * r) + ' мм. ' : '';
     $$('.fld').forEach((f) => f.classList.remove('bad'));
     dirty = true;
   }
@@ -928,11 +1126,18 @@
 
   $('#edit-side').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-v]');
-    if (b) { S.edit = b.dataset.v; save(); fillForm(); }
+    if (b && !busyNow()) { S.edit = b.dataset.v; save(); Object.assign(ch, { kind: null, i: null, pose: null, sel: -1 }); fillForm(); }
   });
   $('#cal-side').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-v]');
     if (b) { S.cal[S.edit].side = +b.dataset.v; save(); fillForm(); }
+  });
+  $('#grip-true').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-v]');
+    if (!b || busyNow()) return;
+    S.cal[S.edit].gripTrue = b.dataset.v;
+    arms[S.edit].last = null; // прежние команды записаны со старым смыслом gripper_state
+    save(); fillForm();
   });
   $$('[data-k]').forEach((el) => {
     el.addEventListener('input', () => {
@@ -940,7 +1145,7 @@
       const ok = el.value.trim() !== '' && Number.isFinite(v);
       el.closest('.fld').classList.toggle('bad', !ok);
       if (!ok) return;
-      S.cal[S.edit][el.dataset.k] = v / (+el.dataset.scale || 1);
+      S.cal[S.edit][el.dataset.k] = v;
       save();
       renderChecks();
     });
@@ -961,8 +1166,9 @@
 
   $('#cal-reset').addEventListener('click', async () => {
     const side = S.edit;
-    if (!(await ask('Сбросить калибровку руки ' + SIGN[side] + '?', 'Сторона, центр поля, шаг, маркер, paint_pov, стоянка и поправки клеток вернутся к значениям по умолчанию. Рука не двигается.', 'Сбросить всё'))) return;
+    if (!(await ask('Сбросить калибровку руки ' + SIGN[side] + '?', 'Сторона, центр поля, шаг, схват, высота проезда, стоянка и все цепочки клеток и гнёзд вернутся к значениям по умолчанию. Рука не двигается.', 'Сбросить всё'))) return;
     S.cal[side] = TTT.defaultCal(side);
+    Object.assign(ch, { kind: null, i: null, pose: null, sel: -1 });
     save(); fillForm();
     $('#test-state').textContent = 'Рука ' + SIGN[side] + ': калибровка сброшена к значениям по умолчанию. Рука не двигалась.';
   });
@@ -1004,41 +1210,31 @@
   $('#speed').addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
   $('#speed').addEventListener('focus', (e) => e.target.select());
 
+  /* ------------------------------ проверка на руке ------------------------------ */
+
   $('#t-cell').innerHTML = Array.from({ length: 9 }, (_, i) => '<option value="' + i + '"' + (i === 4 ? ' selected' : '') + '>Клетка ' + TTT.cellName(i) + '</option>').join('');
-  $('#t-cell').addEventListener('change', () => { renderFix(); dirty = true; });
+
+  /** Текущая поза руки по нашим командам (схват — как в последней команде) */
+  const lastPose = (side) => arms[side].last;
 
   async function test(kind) {
-    if (testing || game.pending || active) return;
+    if (busyNow()) return;
     const side = S.edit;
     const cal = S.cal[side];
-    const cell = +$('#t-cell').value;
-    if (kind === 'down' || kind === 'up') {
-      cal.zDraw = +cal.zDraw + (kind === 'up' ? 1 : -1);
-      save(); fillForm();
-      kind = 'touch';
+    const l = lastPose(side);
+    const closed = !!(l && l.closed);
+    if (kind === 'over') {
+      const cell = +$('#t-cell').value;
+      await runTest(side, [TTT.overCell(cal, cell, closed)], 'над клеткой ' + TTT.cellName(cell), ' Высота проезда ' + Math.round(+cal.zSafe) + ' мм. Центр клетки — по геометрии поля; где именно ставить фигурку, задаёт цепочка на вкладке «Позиции».');
+    } else if (kind === 'open' || kind === 'close') {
+      if (!l) { toast('Сначала отправьте руку над клеткой или на стоянку — схват меняется на месте'); return; }
+      const step = TTT.command(cal, { x: l.x, z: l.z, angel: l.angel, pov: l.pov_gripper, closed: kind === 'close' }, kind === 'close' ? 'схват закрывается' : 'схват открывается', { target: l.target });
+      await runTest(side, [step], kind === 'close' ? 'схват закрыт' : 'схват открыт', ' gripper_state = ' + step.gripper_state + '. Если схват сделал обратное — переключите «gripper_state = true — это…».');
+    } else if (kind === 'park') {
+      await runTest(side, [TTT.park(cal, closed)], 'на стоянку');
     }
-    const near = atCell(side, cell); // уже над этой клеткой — подниматься на высоту подхода незачем
-    const plans = {
-      over: [TTT.cellPlan(cal, cell, false, !near), 'над клеткой ' + TTT.cellName(cell)],
-      touch: [TTT.cellPlan(cal, cell, true, !near), 'касание, высота ' + cal.zDraw + ' мм'],
-      // проверка рисования — без стоянки: рука остаётся над клеткой, знак видно сразу
-      X: [TTT.drawPlan(cal, cell, 'X', false), 'рисует ✕ в ' + TTT.cellName(cell)],
-      O: [TTT.drawPlan(cal, cell, 'O', false), 'рисует ○ в ' + TTT.cellName(cell)],
-      park: [[TTT.park(cal)], 'на стоянку'],
-    };
-    if ((kind === 'X' || kind === 'O') && TTT.checkChain(cal, cell)) {
-      $('#test-state').textContent = '✗ Цепочка клетки ' + TTT.cellName(cell) + ': ' + TTT.checkChain(cal, cell) + '. Исправьте на вкладке «Позиции».';
-      return;
-    }
-    const [plan, title] = plans[kind];
-    // «касание» повторно: маркер уже внизу — достаточно одной точки
-    const run = kind === 'touch' && near && markerDown(side) ? plan.slice(-1) : plan;
-    await runTest(side, run, title, kind === 'touch' ? ' Маркер должен едва касаться листа; если нет — −1 / +1.' : '');
   }
   $$('[data-test]').forEach((b) => b.addEventListener('click', () => test(b.dataset.test)));
-
-  const markerDown = (side) => !!(arms[side].last && arms[side].last.label === 'касание');
-  const atCell = (side, cell) => !!(arms[side].last && arms[side].last.cell === cell);
 
   async function runTest(side, plan, title, note) {
     testing = true;
@@ -1057,120 +1253,45 @@
     }
   }
 
-  /* --------------------- поправка клетки: вылет, высота, база --------------------- */
+  /* ======================= цепочки клеток и гнёзд (вкладка «Позиции») ======================= */
 
-  const FIX_KEYS = { x: 'вылет', z: 'высота', a: 'база' };
-
-  function fixText(cal, cell) {
-    const f = TTT.cellFix(cal, cell);
-    const sg = (v) => (v > 0 ? '+' : '−') + Math.abs(v);
-    const parts = [];
-    if (f.x) parts.push('вылет ' + sg(f.x) + ' мм');
-    if (f.z) parts.push('высота ' + sg(f.z) + ' мм');
-    if (f.a) parts.push('база ' + sg(f.a) + '°');
-    return TTT.cellName(cell) + ': ' + (parts.length ? parts.join(', ') : 'без поправки');
-  }
-
-  function renderFix() {
-    const cal = S.cal[S.edit];
-    const cell = +$('#t-cell').value;
-    $('#fix-state').textContent = fixText(cal, cell);
-    $('#fix-reset').textContent = 'клетку ' + TTT.cellName(cell);
-    $('#cal-reset').textContent = 'всю калибровку руки ' + SIGN[S.edit];
-    renderTestState();
-  }
-
-  /**
-   * Задать поправку клетки и сразу показать её на руке.
-   * Вылет и база — рука над клеткой (маркер опущен — сначала поднять, чтобы не чиркнуть по листу);
-   * высота — касание: сбоку рука не сдвигается, меняется только z.
-   */
-  async function setFix(cell, next, key) {
-    if (testing || game.pending || active) return;
-    const side = S.edit;
-    const cal = S.cal[side];
-    for (const k of Object.keys(TTT.FIX_LIMITS)) {
-      if (Math.abs(next[k]) > TTT.FIX_LIMITS[k]) {
-        toast('Поправка клетки: ' + FIX_KEYS[k] + ' — не больше ±' + TTT.FIX_LIMITS[k] + (k === 'a' ? '°' : ' мм') + '. Если нужно больше, поправьте центр поля, шаг или высоту касания');
-        return;
-      }
-    }
-    const fix = Array.from({ length: 9 }, (_, i) => TTT.cellFix(cal, i));
-    fix[cell] = next;
-    const trial = Object.assign({}, cal, { fix });
-    const down = markerDown(side) && atCell(side, cell);
-    const touch = down || key === 'z';
-    let plan = TTT.cellPlan(trial, cell, touch, !atCell(side, cell));
-    if (down) plan = key === 'z' ? plan.slice(-1) : [Object.assign({}, arms[side].last, { z: Math.round(TTT.heights(cal).travel), label: 'маркер вверх' })].concat(plan);
-    for (const p of plan) {
-      const e = TTT.checkPose(p);
-      if (e) { toast('Так нельзя: ' + e); return; }
-    }
-    cal.fix = fix;
-    save(); renderFix(); renderChecks();
-    const last = plan[plan.length - 1];
-    await runTest(side, plan, fixText(cal, cell), ' Команда: x ' + last.x + ' мм, z ' + last.z + ' мм, база ' + last.angel + '°.');
-  }
-
-  $$('[data-fix]').forEach((b) => b.addEventListener('click', (e) => {
-    const cell = +$('#t-cell').value;
-    const key = b.dataset.fix[0];
-    const f = TTT.cellFix(S.cal[S.edit], cell);
-    const m = e.shiftKey && key !== 'z' ? 5 : 1; // высоту — только по 1 мм: насадка жёсткая
-    f[key] += (b.dataset.fix[1] === '+' ? 1 : -1) * m;
-    setFix(cell, f, key);
-  }));
-  $('#fix-reset').addEventListener('click', () => {
-    setFix(+$('#t-cell').value, { x: 0, z: 0, a: 0 }, 'x');
-  });
-  $('#fix-reset-all').addEventListener('click', async () => {
-    const side = S.edit;
-    if (!(await ask('Обнулить поправки клеток руки ' + SIGN[side] + '?', 'Вылет, высота и база всех 9 клеток станут 0. Общая калибровка останется. Рука не двигается.', 'Обнулить'))) return;
-    S.cal[side].fix = TTT.defaultCal(side).fix;
-    save(); fillForm();
-    $('#test-state').textContent = 'Рука ' + SIGN[side] + ': поправки всех клеток обнулены. Рука не двигалась.';
-  });
-
-  /* ============================ цепочки точек клеток ============================ */
-
-  // Вкладка «Позиции». pose — где рука по нашим командам { x, z, angel, paint_pov }; кнопки двигают её
-  // одной командой, «+ Точка» записывает её в цепочку клетки (после выбранной точки или в конец).
-  const ch = { cell: null, pose: null, sel: -1, busy: false };
+  // pose — где рука по нашим командам { x, z, angel, pov, closed }; кнопки двигают её одной командой,
+  // «+ Точка» записывает её в цепочку выбранной клетки / гнезда (после выбранной точки или в конец).
+  const ch = { kind: null, i: null, pose: null, sel: -1, busy: false };
 
   const tCal = () => S.cal[S.edit];
-  const busyNow = () => testing || !!game.pending || !!active;
-  const curChain = () => (ch.cell === null ? null : TTT.chainOf(tCal(), ch.cell));
-  const travelZ = () => Math.round(TTT.heights(tCal()).travel);
-  const poseText = (p) => 'вылет ' + p.x + ' мм, высота ' + p.z + ' мм, база ' + p.angel + '°, paint_pov ' + p.paint_pov;
-  const PT_KEYS = ['x', 'z', 'angel', 'paint_pov'];
+  const curChain = () => (ch.kind === null ? null : TTT.chainOf(tCal(), ch.kind, ch.i));
+  const curName = () => (ch.kind === 'cell' ? 'клетка ' + TTT.cellName(ch.i) : 'гнездо ' + (ch.i + 1));
+  const zSafe = () => Math.round(+tCal().zSafe);
+  const gripText = (closed) => (closed ? 'закрыт' : 'открыт');
+  const poseText = (p) => 'вылет ' + p.x + ' мм, высота ' + p.z + ' мм, база ' + p.angel + '°, поворот ' + p.pov + '°, схват ' + gripText(p.closed);
+  const PT_KEYS = ['x', 'z', 'angel', 'pov'];
+  const asPose = (p) => ({ x: Math.round(+p.x), z: Math.round(+p.z), angel: Math.round(+p.angel), pov: Math.round(p.pov !== undefined ? +p.pov : +tCal().pov), closed: !!p.closed });
 
   /** Команда руке из точки */
-  function cmd(p, label) {
-    return {
-      x: Math.round(+p.x), z: Math.round(+p.z), angel: Math.round(+p.angel),
-      pov_gripper: Math.round(+tCal().pov), paint_pov: Math.round(+p.paint_pov), cell: ch.cell, label,
-    };
-  }
+  const cmd = (p, label) => TTT.command(tCal(), p, label, { target: TTT.targetOf(ch.kind, ch.i) });
 
   /**
-   * Переезд в точку: низко над листом и надо вбок — сначала вверх до высоты проезда, над точкой — вниз.
-   * Из другой клетки или со стоянки подъём на высоту подхода добавит runPlan.
+   * Переезд в точку: низко и надо вбок — сначала вверх до высоты проезда, над точкой — вниз,
+   * схват меняется уже на месте. Из другой клетки, гнезда или со стоянки подъём добавит runPlan.
    */
   function gotoPlan(target, label) {
-    const last = arms[S.edit].last;
-    const T = travelZ();
-    const t = cmd(target, label);
-    const sideways = !last || last.x !== t.x || last.angel !== t.angel;
+    const l = lastPose(S.edit);
+    const H = zSafe();
+    const keep = l ? l.closed : target.closed; // по дороге схват не трогаем — в нём может быть фигурка
+    const t = Object.assign({}, target, { closed: keep });
+    const sideways = !l || l.x !== t.x || l.angel !== t.angel;
     const plan = [];
-    if (sideways && last && last.cell === ch.cell && last.z < T) plan.push(cmd(Object.assign({}, last, { z: T }), 'вверх'));
-    if (sideways && t.z < T) plan.push(Object.assign({}, t, { z: T, label: 'над точкой' }));
-    plan.push(t);
+    if (sideways && l && l.target === TTT.targetOf(ch.kind, ch.i) && l.z < H) plan.push(cmd({ x: l.x, z: H, angel: l.angel, pov: l.pov_gripper, closed: keep }, 'вверх'));
+    if (sideways && t.z < H) plan.push(cmd(Object.assign({}, t, { z: H }), 'над точкой'));
+    plan.push(cmd(t, label));
+    if (keep !== !!target.closed) plan.push(cmd(target, target.closed ? 'схват закрывается' : 'схват открывается'));
     return plan;
   }
 
   function chainRun(plan, title) {
-    for (const p of plan) {
-      const e = TTT.checkPose(p);
+    for (const q of plan) {
+      const e = TTT.checkPose(q);
       if (e) { toast('Так нельзя: ' + e); return Promise.resolve(false); }
     }
     return runTest(S.edit, plan, title);
@@ -1178,30 +1299,38 @@
 
   function setChain(pts) {
     const cal = tCal();
-    cal.chains = Array.from({ length: 9 }, (_, i) => (cal.chains && cal.chains[i]) || null);
-    cal.chains[ch.cell] = pts && pts.length ? pts : null;
+    const key = ch.kind === 'cell' ? 'chains' : 'slots';
+    const n = ch.kind === 'cell' ? 9 : TTT.SLOTS;
+    cal[key] = Array.from({ length: n }, (_, i) => (cal[key] && cal[key][i]) || null);
+    cal[key][ch.i] = pts && pts.length ? pts : null;
     save(); renderChecks(); renderChain(); renderTeach();
   }
 
-  /** Выбрать клетку: рука встаёт в первую точку цепочки (или над клеткой, если цепочки нет) */
-  async function chainSelect(cell) {
+  /** Выбрать клетку или гнездо: рука встаёт в первую точку цепочки; нет цепочки — над клеткой (гнездо — на месте) */
+  async function chainSelect(kind, i) {
     if (busyNow()) return;
-    ch.cell = cell;
-    ch.sel = -1;
+    Object.assign(ch, { kind, i, sel: -1 });
     const pts = curChain();
-    const first = pts ? pts[0] : TTT.draftChain(tCal(), cell, S.edit)[0];
-    ch.pose = { x: +first.x, z: +first.z, angel: +first.angel, paint_pov: +first.paint_pov };
+    const l = lastPose(S.edit);
+    const here = l ? asPose({ x: l.x, z: l.z, angel: l.angel, pov: l.pov_gripper, closed: l.closed }) : asPose(TTT.park(tCal()));
+    if (pts) ch.pose = asPose(pts[0]);
+    else if (kind === 'cell') { const o = TTT.overCell(tCal(), i, here.closed); ch.pose = asPose(Object.assign({}, o, { pov: o.pov_gripper })); }
+    else ch.pose = here;
     renderChain(); renderTeach();
-    await chainRun(gotoPlan(ch.pose, pts ? 'точка 1' : 'над клеткой ' + TTT.cellName(cell)), (pts ? 'точка 1 цепочки ' : 'над клеткой ') + TTT.cellName(cell));
+    if (!pts && kind === 'slot') {
+      $('#teach-state').textContent = 'Гнездо ' + (i + 1) + ': цепочки нет, рука стоит на месте. Откройте схват, подведите его к фигурке в гнезде и нажмите «Черновик отсюда» — или записывайте точки по одной.';
+      return;
+    }
+    await chainRun(gotoPlan(ch.pose, pts ? 'точка 1' : 'над клеткой ' + TTT.cellName(i)), (pts ? 'точка 1, ' : '') + curName());
   }
 
-  /** Ручной сдвиг одной командой: x / z (мм), a — база (°), p — paint_pov */
+  /** Ручной сдвиг одной командой: x / z (мм), a — база (°), r — поворот схвата (°) */
   async function chainJog(key, d) {
     if (busyNow()) return;
-    if (ch.cell === null) { toast('Сначала выберите клетку слева'); return; }
-    const k = { x: 'x', z: 'z', a: 'angel', p: 'paint_pov' }[key];
+    if (ch.kind === null) { toast('Сначала выберите клетку или гнездо слева'); return; }
+    const k = { x: 'x', z: 'z', a: 'angel', r: 'pov' }[key];
     const next = Object.assign({}, ch.pose, { [k]: ch.pose[k] + d });
-    const step = cmd(next, TTT.cellName(ch.cell) + ': вручную');
+    const step = cmd(next, curName() + ': вручную');
     const e = TTT.checkPose(step);
     if (e) { toast('Так нельзя: ' + e); return; }
     ch.pose = next;
@@ -1209,33 +1338,47 @@
     await runTest(S.edit, [step], poseText(next));
   }
 
+  /** Открыть / закрыть схват на месте */
+  async function chainGrip(closed) {
+    if (busyNow()) return;
+    if (ch.kind === null) { toast('Сначала выберите клетку или гнездо слева'); return; }
+    const next = Object.assign({}, ch.pose, { closed });
+    ch.pose = next;
+    renderTeach();
+    await runTest(S.edit, [cmd(next, closed ? 'схват закрывается' : 'схват открывается')], 'схват ' + gripText(closed));
+  }
+
   function chainAdd(line) {
-    if (busyNow() || ch.cell === null || !ch.pose) return;
+    if (busyNow() || ch.kind === null || !ch.pose) return;
     const pts = (curChain() || []).slice();
     const at = ch.sel >= 0 ? ch.sel + 1 : pts.length;
-    const p = Object.assign({}, ch.pose, { line: !!line && at > 0 });
-    pts.splice(at, 0, p);
+    const q = Object.assign({}, ch.pose, { line: !!line && at > 0 });
+    pts.splice(at, 0, q);
     ch.sel = at;
     setChain(pts);
-    $('#teach-state').textContent = 'Точка ' + (at + 1) + ' записана: ' + poseText(p) + (p.line ? ', по прямой от предыдущей.' : '.');
+    $('#teach-state').textContent = 'Точка ' + (at + 1) + ' записана: ' + poseText(q) + (q.line ? ', по прямой от предыдущей.' : '.');
   }
 
   function renderChain() {
     const list = $('#chain');
     const pts = curChain();
-    $('#chain-title').textContent = ch.cell === null ? 'Цепочка' : 'Цепочка ' + TTT.cellName(ch.cell) + (pts ? ' · ' + pts.length + ' точ.' : ' · нет, рисуется по расчёту');
+    $('#chain-title').textContent = ch.kind === null ? 'Цепочка' : 'Цепочка: ' + curName() + (pts ? ' · ' + pts.length + ' точ.' : ' · нет');
     if (!pts) {
-      list.innerHTML = '<li class="empty">' + (ch.cell === null ? 'Выберите клетку слева.' : 'Цепочки нет. Подведите руку и нажмите «+ Точка» или начните с «Черновика по расчёту».') + '</li>';
+      list.innerHTML = '<li class="empty">' + (ch.kind === null ? 'Выберите клетку или гнездо слева.' : 'Цепочки нет. Подведите схват туда, где ' + (ch.kind === 'cell' ? 'фигурка должна встать' : 'фигурка лежит в гнезде') + ', и нажмите «Черновик отсюда» — или записывайте точки «+ Точка».') + '</li>';
       return;
     }
-    const names = { x: 'Вылет', z: 'Высота', angel: 'База', paint_pov: 'paint_pov' };
+    const names = { x: 'Вылет', z: 'Высота', angel: 'База', pov: 'Поворот схвата' };
     const off = busyNow() ? ' disabled' : '';
-    list.innerHTML = pts.map((p, i) => {
-      const e = TTT.checkPose(cmd(p, ''));
-      return '<li data-i="' + i + '" class="' + (i === ch.sel ? 'sel' : '') + (e ? ' bad' : '') + '"' + (e ? ' title="' + esc(e) + '"' : '') + '>' +
+    list.innerHTML = pts.map((q, i) => {
+      const e = TTT.checkPose(cmd(q, ''));
+      const v = asPose(q);
+      return '<li data-i="' + i + '" class="' + (i === ch.sel ? 'sel' : '') + (e ? ' bad' : '') + (v.closed ? ' closed' : '') + '"' + (e ? ' title="' + esc(e) + '"' : '') + '>' +
         '<span class="n">' + (i + 1) + '</span>' +
-        PT_KEYS.map((k) => '<input class="input mono" data-ck="' + k + '" value="' + esc(p[k]) + '" inputmode="numeric" aria-label="' + names[k] + ', точка ' + (i + 1) + '"' + off + '>').join('') +
-        '<label class="ln" title="Идти к точке по прямой от предыдущей"><input type="checkbox" data-line' + (p.line ? ' checked' : '') + (i && !off ? '' : ' disabled') + '>прямо</label>' +
+        PT_KEYS.map((k) => '<input class="input mono" data-ck="' + k + '" value="' + esc(v[k]) + '" inputmode="numeric" aria-label="' + names[k] + ', точка ' + (i + 1) + '"' + off + '>').join('') +
+        '<span class="opts">' +
+          '<label class="ln" title="Схват в этой точке закрыт"><input type="checkbox" data-grip' + (v.closed ? ' checked' : '') + off + '>схват закрыт</label>' +
+          '<label class="ln" title="Идти к точке по прямой от предыдущей"><input type="checkbox" data-line' + (q.line ? ' checked' : '') + (i && !off ? '' : ' disabled') + '>прямо</label>' +
+        '</span>' +
         '<span class="acts">' +
           '<button data-act="go" title="Ехать в точку"' + off + '>⌖</button>' +
           '<button data-act="set" title="Записать сюда текущее положение руки"' + off + '>✎</button>' +
@@ -1252,91 +1395,114 @@
     $$('#teach-side button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.v === S.edit)));
     const grid = $('#teach-cells');
     if (!grid.children.length) {
-      grid.innerHTML = Array.from({ length: 9 }, (_, i) => '<button data-cell="' + i + '" role="gridcell"><span class="nm">' + TTT.cellName(i) + '</span><span class="st"></span></button>').join('');
+      grid.innerHTML = Array.from({ length: 9 }, (_, i) => '<button data-kind="cell" data-i="' + i + '" role="gridcell"><span class="nm">' + TTT.cellName(i) + '</span><span class="st"></span></button>').join('');
+      $('#teach-slots').innerHTML = Array.from({ length: TTT.SLOTS }, (_, k) => '<button data-kind="slot" data-i="' + k + '"><span class="nm">' + (k + 1) + '</span><span class="st"></span></button>').join('');
     }
-    let n = 0;
-    $$('#teach-cells button').forEach((b) => {
-      const i = +b.dataset.cell;
-      const pts = TTT.chainOf(cal, i);
-      const err = pts && TTT.checkChain(cal, i);
-      if (pts) n++;
+    const need = TTT.NEED_SLOTS[S.edit];
+    const count = { cell: 0, slot: 0 };
+    $$('#teach-cells button, #teach-slots button').forEach((b) => {
+      const kind = b.dataset.kind, i = +b.dataset.i;
+      const pts = TTT.chainOf(cal, kind, i);
+      const err = pts && TTT.checkChain(cal, kind, i);
+      if (pts && !err) count[kind]++;
       b.classList.toggle('ok', !!pts && !err);
       b.classList.toggle('bad', !!err);
-      b.classList.toggle('cur', i === ch.cell);
+      b.classList.toggle('cur', kind === ch.kind && i === ch.i);
+      b.classList.toggle('opt', kind === 'slot' && i >= need && !pts);
       b.disabled = busy;
       b.title = err ? 'Цепочка: ' + err : '';
-      b.querySelector('.st').textContent = err ? '✗ цепочка' : pts ? '✓ ' + pts.length + ' точ.' : 'по расчёту';
+      b.querySelector('.st').textContent = err ? '✗ ошибка' : pts ? '✓ ' + pts.length + ' точ.' : kind === 'slot' && i >= need ? 'не нужно' : 'нет';
     });
-    $('#teach-progress').textContent = 'Рука ' + SIGN[S.edit] + ' рисует ' + SIGN[S.edit] + ': цепочки у ' + n + ' из 9 клеток.' + (n < 9 ? ' Остальные рисуются по расчёту (центр поля, шаг клетки, поправки).' : '');
-    const p = ch.pose;
-    $('#tn-cell').textContent = ch.cell === null ? '—' : TTT.cellName(ch.cell);
-    $('#tn-x').textContent = p ? p.x : '—';
-    $('#tn-z').textContent = p ? p.z : '—';
-    $('#tn-a').textContent = p ? p.angel : '—';
-    $('#tn-p').textContent = p ? p.paint_pov : '—';
-    const T = travelZ(), D = Math.round(+cal.zDraw);
-    $('#tn-note').textContent = p ? 'Касание листа — z ≈ ' + D + ', проезд — ' + T + ', подход — ' + Math.round(TTT.heights(cal).approach) + ' мм.' + (p.z < T ? ' Сейчас ниже проезда: сдвиг вбок рисует по листу.' : '') : '';
-    const none = ch.cell === null;
-    $$('[data-tj], #chain-add, #chain-add-line, #chain-draft').forEach((b) => { b.disabled = busy || none; });
+    $('#teach-progress').textContent = 'Рука ' + SIGN[S.edit] + ': клетки ' + count.cell + ' из 9, гнёзда ' + count.slot + ' из ' + need + '. ' +
+      (count.cell < 9 || count.slot < need ? 'Без цепочки клетки или нужного гнезда ход не начнётся.' : 'Всё записано — можно играть.');
+    const q = ch.pose;
+    $('#tn-cell').textContent = ch.kind === null ? '—' : ch.kind === 'cell' ? TTT.cellName(ch.i) : 'г' + (ch.i + 1);
+    $('#tn-x').textContent = q ? q.x : '—';
+    $('#tn-z').textContent = q ? q.z : '—';
+    $('#tn-a').textContent = q ? q.angel : '—';
+    $('#tn-r').textContent = q ? q.pov : '—';
+    $('#tn-g').textContent = q ? gripText(q.closed) : '—';
+    const H = zSafe();
+    $('#tn-note').textContent = q ? 'Высота проезда — ' + H + ' мм: цепочка начинается и кончается не ниже.' + (q.z < H ? ' Сейчас ниже — сдвиг вбок может задеть фигурки.' : '') : '';
+    const none = ch.kind === null;
+    $$('[data-tj], #chain-add, #chain-add-line, #chain-draft, #grip-open, #grip-close').forEach((b) => { b.disabled = busy || none; });
+    $('#grip-open').setAttribute('aria-pressed', String(!!q && !q.closed));
+    $('#grip-close').setAttribute('aria-pressed', String(!!q && q.closed));
     $('#chain-play').disabled = busy || !curChain();
+    $('#chain-back').disabled = busy || !curChain();
     $('#chain-clear').disabled = busy || !curChain();
-    $('#chain-clear-all').disabled = busy || !n;
+    $('#chain-clear-all').disabled = busy || !((cal.chains || []).some(Boolean) || (cal.slots || []).some(Boolean));
     // пока рука едет, список точек заблокирован; закончила — перерисовать его разблокированным
     if (busy !== ch.busy) { ch.busy = busy; renderChain(); }
   }
 
-  $('#teach-cells').addEventListener('click', (e) => { const b = e.target.closest('button[data-cell]'); if (b) chainSelect(+b.dataset.cell); });
+  const pickTarget = (e) => { const b = e.target.closest('button[data-kind]'); if (b) chainSelect(b.dataset.kind, +b.dataset.i); };
+  $('#teach-cells').addEventListener('click', pickTarget);
+  $('#teach-slots').addEventListener('click', pickTarget);
   $('#teach-side').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-v]');
     if (!b || b.dataset.v === S.edit || busyNow()) return;
     S.edit = b.dataset.v;
     save();
-    Object.assign(ch, { cell: null, pose: null, sel: -1 });
+    Object.assign(ch, { kind: null, i: null, pose: null, sel: -1 });
     fillForm(); renderChain(); renderTeach();
   });
   $$('[data-tj]').forEach((b) => b.addEventListener('click', () => { const [k, d] = b.dataset.tj.split(':'); chainJog(k, +d); }));
+  $('#grip-open').addEventListener('click', () => chainGrip(false));
+  $('#grip-close').addEventListener('click', () => chainGrip(true));
   $('#chain-add').addEventListener('click', () => chainAdd(false));
   $('#chain-add-line').addEventListener('click', () => chainAdd(true));
 
-  $('#chain-play').addEventListener('click', async () => {
+  /** Пройти цепочку на руке без стоянки; back — задом наперёд (забрать из клетки / вернуть в гнездо) */
+  async function chainPlay(back) {
     if (busyNow() || !curChain()) return;
-    const cal = tCal(), cell = ch.cell;
-    const e = TTT.checkChain(cal, cell);
-    if (e) { $('#teach-state').textContent = '✗ Цепочка ' + TTT.cellName(cell) + ': ' + e; return; }
+    const cal = tCal();
+    const e = TTT.checkChain(cal, ch.kind, ch.i);
+    if (e) { $('#teach-state').textContent = '✗ Цепочка: ' + curName() + ': ' + e; return; }
     const pts = curChain();
-    const last = pts[pts.length - 1];
-    ch.pose = { x: +last.x, z: +last.z, angel: +last.angel, paint_pov: +last.paint_pov };
-    ch.sel = pts.length - 1;
+    const end = back ? 0 : pts.length - 1;
+    ch.pose = asPose(pts[end]);
+    ch.sel = end;
     renderChain(); renderTeach();
-    await runTest(S.edit, TTT.chainPlan(cal, cell, false), 'цепочка ' + TTT.cellName(cell) + ' пройдена');
-  });
+    const what = back ? (ch.kind === 'cell' ? 'фигурка забрана из клетки' : 'фигурка возвращена в гнездо') : (ch.kind === 'cell' ? 'фигурка поставлена' : 'фигурка взята');
+    await runTest(S.edit, TTT.chainPlan(cal, ch.kind, ch.i, back), curName() + (back ? ' задом наперёд' : '') + ' — ' + what);
+  }
+  $('#chain-play').addEventListener('click', () => chainPlay(false));
+  $('#chain-back').addEventListener('click', () => chainPlay(true));
 
   $('#chain-draft').addEventListener('click', async () => {
-    if (busyNow() || ch.cell === null) return;
-    if (curChain() && !(await ask('Заменить цепочку ' + TTT.cellName(ch.cell) + '?', 'Точки цепочки заменятся черновиком из текущей калибровки (центр поля, шаг клетки, высоты, поправка клетки). Рука не двигается.', 'Заменить'))) return;
+    if (busyNow() || ch.kind === null || !ch.pose) return;
+    const H = zSafe();
+    if (ch.pose.z >= H) { toast('Сначала опустите схват к ' + (ch.kind === 'cell' ? 'месту фигурки в клетке' : 'фигурке в гнезде') + ' — сейчас он на высоте проезда (' + H + ' мм) или выше'); return; }
+    if (curChain() && !(await ask('Заменить цепочку: ' + curName() + '?', 'Точки заменятся черновиком от текущего положения схвата: над ним на высоте проезда → по прямой вниз → схват → по прямой вверх. Рука не двигается.', 'Заменить'))) return;
+    const draft = TTT.draftChain(tCal(), ch.kind, ch.pose);
     ch.sel = -1;
-    setChain(TTT.draftChain(tCal(), ch.cell, S.edit));
-    $('#teach-state').textContent = 'Черновик ' + SIGN[S.edit] + ' для ' + TTT.cellName(ch.cell) + ': ' + curChain().length + ' точек. Проверьте точки — «⌖» ведёт руку в точку, «✎» записывает в неё текущее положение — и нажмите «▶ Проиграть».';
+    setChain(draft);
+    const e = TTT.checkChain(tCal(), ch.kind, ch.i);
+    $('#teach-state').textContent = e ? '✗ Черновик записан, но с ошибкой: ' + e
+      : 'Черновик для «' + curName() + '»: ' + draft.length + ' точки от текущего положения. Проверьте «▶ Проиграть» и «◀ Обратно»; точку можно подправить — «⌖» ведёт в неё руку, «✎» записывает текущее положение.';
   });
 
   $('#chain-clear').addEventListener('click', async () => {
     if (busyNow() || !curChain()) return;
-    if (!(await ask('Очистить цепочку ' + TTT.cellName(ch.cell) + '?', 'Клетка будет рисоваться по расчёту. Рука не двигается.', 'Очистить'))) return;
+    if (!(await ask('Очистить цепочку: ' + curName() + '?', 'Без цепочки рука не сможет ' + (ch.kind === 'cell' ? 'ставить фигурку в эту клетку' : 'брать фигурку из этого гнезда') + '. Рука не двигается.', 'Очистить'))) return;
     ch.sel = -1;
     setChain(null);
-    $('#teach-state').textContent = 'Цепочка ' + TTT.cellName(ch.cell) + ' очищена — клетка рисуется по расчёту.';
+    $('#teach-state').textContent = 'Цепочка «' + curName() + '» очищена.';
   });
 
   $('#chain-clear-all').addEventListener('click', async () => {
     const side = S.edit;
-    if (busyNow() || !(await ask('Удалить все цепочки руки ' + SIGN[side] + '?', 'Все 9 клеток будут рисоваться по расчёту. Рука не двигается.', 'Удалить все'))) return;
-    S.cal[side].chains = TTT.defaultCal(side).chains;
+    if (busyNow() || !(await ask('Удалить все цепочки руки ' + SIGN[side] + '?', 'Цепочки всех 9 клеток и ' + TTT.SLOTS + ' гнёзд будут удалены. Рука не двигается.', 'Удалить все'))) return;
+    const d = TTT.defaultCal(side);
+    S.cal[side].chains = d.chains;
+    S.cal[side].slots = d.slots;
     ch.sel = -1;
     save(); renderChecks(); renderChain(); renderTeach();
     $('#teach-state').textContent = 'Рука ' + SIGN[side] + ': все цепочки удалены.';
   });
 
-  // список точек: выбор строки, правка чисел, «по прямой», действия
+  // список точек: выбор строки, правка чисел, схват, «по прямой», действия
   $('#chain').addEventListener('click', async (e) => {
     const li = e.target.closest('li[data-i]');
     if (!li || busyNow()) return;
@@ -1344,18 +1510,17 @@
     const b = e.target.closest('button[data-act]');
     const pts = curChain().slice();
     if (!b) {
-      if (e.target.closest('input')) return;
+      if (e.target.closest('input, label')) return;
       ch.sel = ch.sel === i ? -1 : i;
       renderChain();
       return;
     }
     const act = b.dataset.act;
     if (act === 'go') {
-      const p = pts[i];
-      ch.pose = { x: +p.x, z: +p.z, angel: +p.angel, paint_pov: +p.paint_pov };
+      ch.pose = asPose(pts[i]);
       ch.sel = i;
       renderChain(); renderTeach();
-      await chainRun(gotoPlan(ch.pose, 'точка ' + (i + 1)), 'точка ' + (i + 1) + ' цепочки ' + TTT.cellName(ch.cell));
+      await chainRun(gotoPlan(ch.pose, 'точка ' + (i + 1)), 'точка ' + (i + 1) + ', ' + curName());
       return;
     }
     if (act === 'set') {
@@ -1373,14 +1538,11 @@
     if (!li) return;
     const i = +li.dataset.i;
     const pts = curChain().slice();
-    if (e.target.matches('[data-line]')) {
-      pts[i] = Object.assign({}, pts[i], { line: e.target.checked });
-      setChain(pts);
-      return;
-    }
+    if (e.target.matches('[data-line]')) { pts[i] = Object.assign({}, pts[i], { line: e.target.checked }); setChain(pts); return; }
+    if (e.target.matches('[data-grip]')) { pts[i] = Object.assign({}, pts[i], { closed: e.target.checked }); setChain(pts); return; }
     const k = e.target.dataset.ck;
     const v = Number(String(e.target.value).replace(',', '.'));
-    if (!k || !Number.isFinite(v)) { e.target.value = pts[i][k]; toast('Нужно число'); return; }
+    if (!k || !Number.isFinite(v)) { e.target.value = asPose(pts[i])[k]; toast('Нужно число'); return; }
     pts[i] = Object.assign({}, pts[i], { [k]: Math.round(v) });
     setChain(pts);
   });
@@ -1396,17 +1558,18 @@
       ArrowUp: () => chainJog('x', m ? 10 : 1), ArrowDown: () => chainJog('x', m ? -10 : -1),
       ArrowLeft: () => chainJog('a', m ? 5 : 1), ArrowRight: () => chainJog('a', m ? -5 : -1),
       PageUp: () => chainJog('z', m ? 10 : 1), PageDown: () => chainJog('z', m ? -10 : -1),
-      ']': () => chainJog('p', 1), '[': () => chainJog('p', -1), '}': () => chainJog('p', 10), '{': () => chainJog('p', -10),
+      ']': () => chainJog('r', 1), '[': () => chainJog('r', -1), '}': () => chainJog('r', 10), '{': () => chainJog('r', -10),
       Enter: () => chainAdd(m),
     };
-    if (!keys[e.key]) return;
+    const fn = keys[e.key] || (e.code === 'KeyG' && ch.pose ? () => chainGrip(!ch.pose.closed) : null);
+    if (!fn) return;
     e.preventDefault();
-    keys[e.key]();
+    fn();
   });
 
   // перенос настроек на вторую вебку
   $('#cfg-save').addEventListener('click', () => {
-    const data = { app: 'armbox-ttt', version: 1, dev: S.dev, transport: S.transport, lamps: S.lamps, speed: S.speed, cal: S.cal };
+    const data = { app: 'armbox-ttt', version: 2, dev: S.dev, transport: S.transport, lamps: S.lamps, speed: S.speed, cal: S.cal };
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
     a.download = 'armbox-ttt.json';
@@ -1418,6 +1581,7 @@
     const f = e.target.files[0];
     e.target.value = '';
     if (!f) return;
+    if (busyNow()) { toast('Дождитесь окончания движения'); return; }
     try {
       const d = JSON.parse(await f.text());
       if (!d || d.app !== 'armbox-ttt') throw new Error('это не файл настроек игры');
@@ -1425,9 +1589,12 @@
       if (d.transport) S.transport = d.transport;
       if (typeof d.lamps === 'boolean') S.lamps = d.lamps;
       if (Number.isInteger(d.speed) && d.speed >= 1 && d.speed <= 100) S.speed = d.speed;
-      SIDES.forEach((side) => { if (d.cal && d.cal[side]) S.cal[side] = Object.assign(TTT.defaultCal(side), TTT.migrateCal(d.cal[side]).cal); });
+      droppedFor.length = 0;
+      SIDES.forEach((side) => { if (d.cal && d.cal[side]) S.cal[side] = loadCal(side, d.cal[side]); });
+      Object.assign(ch, { kind: null, i: null, pose: null, sel: -1 });
       save(); fillForm(); startArms(); refreshCam();
-      toast('Настройки загружены');
+      if (S.page === 'teach') { renderChain(); renderTeach(); }
+      toast(droppedFor.length ? 'Настройки загружены. Цепочки рисования маркером удалены — запишите цепочки фигурок на вкладке «Позиции»' : 'Настройки загружены');
     } catch (err) {
       toast('Не удалось загрузить: ' + err.message);
     }
@@ -1474,8 +1641,9 @@
   render();
   robotTurn();
   requestAnimationFrame(frame);
-  if (touchResetFor.length) {
+  if (droppedFor.length) {
     save();
-    toast('Высота касания руки ' + touchResetFor.map((s) => SIGN[s]).join(' и ') + ' поднята до ' + TTT.DEFAULT_CAL.zDraw + ' мм: маркер торчит на 60 мм. Подберите касание заново на вкладке «Настройка»');
+    toast('Игра теперь ставит фигурки: цепочки рисования маркером руки ' + droppedFor.map((s) => SIGN[s]).join(' и ') + ' удалены. Запишите цепочки клеток и гнёзд на вкладке «Позиции»');
   }
+  if (game.board.some(Boolean)) toast('На поле фигурки с прошлого раза — партия продолжается');
 })();

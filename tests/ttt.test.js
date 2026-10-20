@@ -1,4 +1,4 @@
-// Игра: правила, робот и геометрия рисования (web/assets/ttt.js)
+// Игра: правила, робот, цепочки «взять из гнезда → поставить в клетку» и лотки (web/assets/ttt.js)
 const test = require('node:test');
 const assert = require('node:assert/strict');
 globalThis.Kin = require('../web/assets/kinematics.js');
@@ -35,12 +35,7 @@ test('поле ↔ рука: обратное преобразование', () 
   }
 });
 
-test('калибровка по умолчанию укладывается в рабочую зону обеих рук', () => {
-  assert.deepEqual(T.checkCalibration(T.defaultCal('X')).list, []);
-  assert.deepEqual(T.checkCalibration(T.defaultCal('O')).list, []);
-});
-
-test('по умолчанию рука ✕ у левого края листа, рука ○ — у правого', () => {
+test('по умолчанию рука ✕ у левого края поля, рука ○ — у правого', () => {
   const dist = (side, cell) => {
     const cal = T.defaultCal(side);
     const c = T.cellBoard(cell, cal.pitch);
@@ -51,231 +46,191 @@ test('по умолчанию рука ✕ у левого края листа, 
   assert.ok(dist('O', 5) < dist('O', 3), 'рука ○ ближе к В2, чем к А2');
 });
 
-test('поле у самой базы ловится как ошибка калибровки', () => {
-  const r = T.checkCalibration({ ...T.DEFAULT_CAL, cu: 120 });
-  assert.ok(r.list.some((t) => /упора в базу/.test(t)), r.list.join('\n'));
-});
-
-test('план рисования: маркер опускается на высоту касания и поднимается', () => {
-  const plan = T.drawPlan(T.DEFAULT_CAL, 4, 'X');
-  const h = T.heights(T.DEFAULT_CAL);
-  assert.equal(plan[0].z, h.approach);
-  assert.ok(plan.some((p) => p.z === T.DEFAULT_CAL.zDraw));
-  assert.equal(plan[plan.length - 1].label, 'на стоянку');
-  for (const p of plan) assert.equal(T.checkPose(p), null, p.label);
-});
-
-test('маркер 60 мм: высоты по умолчанию и подход к клетке сверху', () => {
-  const cal = T.defaultCal('X');
-  const h = T.heights(cal);
-  assert.deepEqual(h, { draw: 60, travel: 100, approach: 160 }, 'кончик маркера: касание, +40 и +100 мм над листом');
-  for (const cell of [0, 4, 8]) {
-    for (const mark of ['X', 'O']) {
-      const plan = T.drawPlan(cal, cell, mark);
-      const [a, over] = plan;
-      assert.equal(a.z, h.approach, 'к клетке — на высоте подхода');
-      assert.deepEqual([over.x, over.angel, over.z], [a.x, a.angel, h.travel], 'затем вертикально вниз до проезда');
-      const back = plan[plan.length - 2];
-      assert.equal(back.z, h.approach, 'от клетки — вверх до высоты подхода, потом стоянка');
-      assert.deepEqual([back.x, back.angel], [plan[plan.length - 3].x, plan[plan.length - 3].angel]);
-      // ниже проезда рука бывает только с опущенным маркером
-      for (const p of plan) if (p.z < h.travel) assert.ok(/маркер вниз|рисует/.test(p.label), p.label);
-    }
+test('«над клеткой» и стоянка по умолчанию — в рабочей зоне; поле у базы ловится', () => {
+  for (const side of ['X', 'O']) {
+    const cal = T.defaultCal(side);
+    for (let i = 0; i < 9; i++) assert.equal(T.checkPose(T.overCell(cal, i)), null, side + ' ' + T.cellName(i));
+    assert.equal(T.checkPose(T.park(cal)), null);
+    assert.equal(T.overCell(cal, 4).z, cal.zSafe, 'над клеткой — на высоте проезда');
   }
-  // касание подобрали — проезд и подход сдвинулись вместе с ним
-  assert.deepEqual(T.heights({ ...cal, zDraw: 57 }), { draw: 57, travel: 97, approach: 157 });
+  const near = { ...T.defaultCal('X'), side: 0, cu: 120 };
+  assert.match(T.checkPose(T.overCell(near, 7)), /упора в базу/);
 });
 
-test('старая калибровка (zTravel, касание 20 без маркера) переносится на подъёмы над листом', () => {
-  const m = T.migrateCal({ side: 90, zDraw: 20, zTravel: 60, cu: 210 });
-  assert.equal(m.touchReset, true);
-  assert.equal(m.cal.zDraw, 60);
-  assert.equal(m.cal.liftTravel, 40);
-  assert.equal(m.cal.liftApproach, 100);
-  assert.ok(!('zTravel' in m.cal));
-  assert.equal(m.cal.cu, 210);
-  const tuned = T.migrateCal({ zDraw: 58, zTravel: 90 }); // касание уже подобрано на руке — не трогаем
-  assert.equal(tuned.touchReset, false);
-  assert.equal(tuned.cal.zDraw, 58);
-  assert.equal(tuned.cal.liftTravel, 32);
-  const fresh = T.defaultCal('O');
-  assert.deepEqual(T.migrateCal(fresh).cal, fresh, 'новый формат не меняется');
-});
-
-test('поправка клетки: вылет, высота касания и база прибавляются ко всем командам этой клетки', () => {
-  const base = T.defaultCal('X');
+test('команды — для /pos/set: целые, gripper_state по настройке gripTrue', () => {
   const cal = T.defaultCal('X');
-  cal.fix[0] = { x: 4, z: -2, a: 3 };
-  const [o0, t0] = T.cellPlan(base, 0, true, false);
-  const [o1, t1] = T.cellPlan(cal, 0, true, false);
-  assert.equal(o1.x, o0.x + 4);
-  assert.equal(o1.angel, o0.angel + 3);
-  assert.equal(o1.z, o0.z, 'высота проезда не меняется');
-  assert.equal(t1.z, t0.z - 2, 'касание ниже на 2 мм');
-  // знак: каждая точка сдвинута так же
-  const d0 = T.drawPlan(base, 0, 'O', false), d1 = T.drawPlan(cal, 0, 'O', false);
-  assert.equal(d1.length, d0.length);
-  d1.forEach((p, i) => {
-    assert.equal(p.x, d0[i].x + 4);
-    assert.equal(p.angel, d0[i].angel + 3);
-    assert.equal(p.z, d0[i].z > base.zDraw + 5 ? d0[i].z : d0[i].z - 2, p.label);
+  const p = T.command(cal, { x: 200.4, z: 99.6, angel: 180.2, closed: true }, 'проба');
+  assert.deepEqual([p.x, p.z, p.angel, p.pov_gripper], [200, 100, 180, 150], 'pov по умолчанию — из калибровки');
+  assert.equal(p.closed, true);
+  assert.equal(p.gripper_state, false, 'по умолчанию true — открыт, как в пульте');
+  assert.equal(T.command({ ...cal, gripTrue: 'closed' }, { x: 200, z: 100, angel: 180, closed: true }, '').gripper_state, true);
+  assert.ok(!('paint_pov' in p));
+  assert.match(T.checkPose({ ...p, pov_gripper: 0 }), /поворот схвата 0 вне 1–300/);
+  assert.match(T.checkPose({ ...p, gripper_state: undefined }), /состояние схвата/);
+});
+
+/** Рука ✕ с цепочками гнезда 0 и клетки Б2 (черновики от точки захвата / установки) */
+function armWithChains(side = 'X') {
+  const cal = T.defaultCal(side);
+  const o = T.overCell(cal, 4);
+  cal.slots[0] = T.draftChain(cal, 'slot', { x: 230, z: 40, angel: 120 });
+  cal.chains[4] = T.draftChain(cal, 'cell', { x: o.x, z: 45, angel: o.angel });
+  return cal;
+}
+
+test('черновик: над точкой на высоте проезда → по прямой вниз → схват → по прямой вверх', () => {
+  const cal = armWithChains();
+  const s = cal.slots[0], c = cal.chains[4];
+  assert.deepEqual(s.map((q) => [q.z, q.closed, q.line]), [[150, false, false], [40, false, true], [40, true, false], [150, true, true]], 'гнездо: пустой пришёл, с фигуркой ушёл');
+  assert.deepEqual(c.map((q) => [q.z, q.closed]), [[150, true], [45, true], [45, false], [150, false]], 'клетка: принёс фигурку, отпустил');
+  assert.equal(T.checkChain(cal, 'slot', 0), null);
+  assert.equal(T.checkChain(cal, 'cell', 4), null);
+  // точка захвата выше проезда − 30 — подъём хотя бы на 30 мм
+  assert.equal(T.draftChain(cal, 'slot', { x: 200, z: 140, angel: 180 })[0].z, 170);
+});
+
+test('ход: взять из гнезда → поставить в клетку → стоянка; лоток отмечается на смене схвата', () => {
+  const cal = armWithChains();
+  const plan = T.movePlan(cal, 0, 4);
+  for (const p of plan) assert.equal(T.checkPose(p), null, p.label);
+  assert.equal(plan[plan.length - 1].label, 'на стоянку');
+  assert.equal(plan[plan.length - 1].closed, false, 'на стоянку — со свободным схватом');
+  const marks = plan.filter((p) => 'trayTo' in p);
+  assert.deepEqual(marks.map((p) => [p.slot, p.trayTo, p.closed, p.z]), [[0, 'hand', true, 40], [0, 4, false, 45]]);
+  // схват меняется только внизу, на месте: координаты как у предыдущей позы
+  plan.forEach((p, k) => {
+    if (k && p.closed !== plan[k - 1].closed) assert.deepEqual([p.x, p.z, p.angel], [plan[k - 1].x, plan[k - 1].z, plan[k - 1].angel], p.label);
   });
-  // другие клетки не тронуты
-  assert.deepEqual(T.drawPlan(cal, 4, 'X'), T.drawPlan(base, 4, 'X'));
+  // с фигуркой в руке рука не опускается ниже проезда вне гнезда и клетки
+  const pick = plan.filter((p) => p.stage === 'pick'), place = plan.filter((p) => p.stage === 'place');
+  assert.ok(pick.every((p) => p.target === 's0') && place.every((p) => p.target === 'c4'));
+  assert.ok(pick[pick.length - 1].z >= cal.zSafe && place[0].z >= cal.zSafe);
+  // фигурка уже в схвате — сразу к клетке
+  const again = T.movePlan(cal, 0, 4, { inHand: true });
+  assert.ok(again.every((p) => p.stage !== 'pick'));
+  assert.deepEqual(again.filter((p) => 'trayTo' in p).map((p) => p.trayTo), [4]);
 });
 
-test('у каждой копии калибровки свои поправки; старые настройки без fix работают', () => {
-  const a = T.defaultCal('X'), b = T.defaultCal('X');
-  a.fix[4].x = 2;
-  assert.deepEqual(b.fix[4], { x: 0, z: 0, a: 0 });
-  assert.deepEqual(T.defaultCal('O').fix[4], { x: 0, z: 0, a: 0 });
-  const old = { ...T.DEFAULT_CAL, side: 90 }; // сохранено до появления поправок
-  assert.deepEqual(T.cellFix(old, 4), { x: 0, z: 0, a: 0 });
-  assert.deepEqual(T.checkCalibration(old).list, []);
-  assert.deepEqual(T.cellFix({ ...old, fix: [[3, 4]] }, 0), { x: 0, z: 0, a: 0 }, 'чужой формат игнорируется');
-});
-
-test('слишком большая поправка клетки — в списке проблем калибровки', () => {
-  const cal = T.defaultCal('X');
-  cal.fix[8] = { x: 0, z: 0, a: 9 };
-  assert.ok(T.checkCalibration(cal).list.some((t) => /В1: поправка база 9/.test(t)), T.checkCalibration(cal).list.join('\n'));
-});
-
-test('позы игры — для /pos/set-paint: paint_pov из калибровки (по умолчанию 50), без gripper_state', () => {
-  const cal = T.defaultCal('X');
-  assert.equal(cal.paintPov, 50);
-  const plan = T.drawPlan(cal, 4, 'X');
-  for (const p of plan) {
-    assert.equal(p.paint_pov, 50, p.label);
-    assert.ok(!('grip' in p) && !('gripper_state' in p), p.label);
+test('по прямой: вертикальный спуск дробится с шагом step, схват по дороге не меняется', () => {
+  const cal = armWithChains();
+  const down = T.chainPlan(cal, 'slot', 0).filter((p) => /по прямой к точке 2/.test(p.label));
+  assert.equal(down.length, Math.ceil((150 - 40) / cal.step) - 1);
+  for (const p of down) {
+    assert.deepEqual([p.x, p.angel, p.closed], [230, 120, false]);
+    assert.ok(p.z > 40 && p.z < 150);
   }
-  assert.equal(T.cellPlan({ ...cal, paintPov: 72 }, 0, true)[1].paint_pov, 72);
-  assert.match(T.checkPose({ ...plan[0], paint_pov: 400 }), /paint_pov 400/);
-  assert.match(T.checkPose({ ...plan[0], paint_pov: 0 }), /paint_pov 0 вне 1–300/, 'диапазон как у pov_gripper');
-  assert.match(T.checkPose({ ...plan[0], paint_pov: NaN }), /paint_pov/);
-});
-
-test('маркер смещён от оси: ✕ и касание ставят в точку кончик маркера', () => {
-  const cal = { ...T.defaultCal('X'), markerA: 12, markerB: -7 };
-  // ось ↔ кончик — обратные преобразования
-  for (const [u, v] of [[200, 0], [150, 60], [260, -80]]) {
-    const ax = T.tipToAxis(u, v, cal);
-    const tip = T.axisToTip(ax.u, ax.v, cal);
-    assert.ok(Math.hypot(tip.u - u, tip.v - v) < 1e-9);
-  }
-  // по командам руки (целые x и угол) кончик попадает в точки линий ✕ с точностью квантования
-  for (const cell of [0, 4, 8]) {
-    const strokes = T.markStrokes(cell, 'X', cal).flat();
-    const draw = T.drawPlan(cal, cell, 'X', false).filter((p) => /рисует|маркер вниз/.test(p.label));
-    assert.equal(draw.length, strokes.length);
-    draw.forEach((p, i) => {
-      const ax = T.polarToArm(p.x, p.angel);
-      const tip = T.axisToTip(ax.u, ax.v, cal);
-      const want = T.boardToArm(strokes[i].bx, strokes[i].by, cal);
-      assert.ok(Math.hypot(tip.u - want.u, tip.v - want.v) < 3, 'клетка ' + cell + ', точка ' + i);
-    });
-  }
-  // без компенсации кончик ушёл бы на величину смещения
-  const plain = T.cellPlan({ ...cal, markerA: 0, markerB: 0 }, 4, true, false)[1];
-  const ax = T.polarToArm(plain.x, plain.angel);
-  const off = T.axisToTip(ax.u, ax.v, cal);
-  const c = T.boardToArm(0, 0, cal);
-  assert.ok(Math.hypot(off.u - c.u, off.v - c.v) > 13);
-});
-
-test('○ рисует поворот paint_pov: ось в центре клетки, рука стоит, от середины влево, потом вправо', () => {
-  const cal = { ...T.defaultCal('O'), markerA: 12, markerB: -7 };
-  const plan = T.drawPlan(cal, 4, 'O');
-  const center = T.cellPlan({ ...cal, markerA: 0, markerB: 0 }, 4, true, false)[1]; // ось ровно над центром
-  const atCell = plan.filter((p) => p.label !== 'на стоянку');
-  for (const p of atCell) assert.deepEqual([p.x, p.angel], [center.x, center.angel], p.label);
-  const down = atCell.findIndex((p) => p.label === 'маркер вниз');
-  assert.equal(atCell[down].paint_pov, 150, 'маркер опускается при paint_pov в середине');
-  assert.equal(atCell[down + 1].paint_pov, 1, 'первый проход — влево до 1');
-  assert.equal(atCell[down + 2].paint_pov, 300, 'второй проход — вправо до 300, через середину');
-  for (const k of [1, 2]) assert.equal(atCell[down + k].z, atCell[down].z, 'во время поворота маркер на листе');
-  assert.equal(atCell[down + 3].label, 'маркер вверх');
-  assert.equal(atCell.filter((p) => p.label.startsWith('рисует')).length, 2);
-  assert.equal(plan[plan.length - 1].paint_pov, 50, 'на стоянке — paint_pov по умолчанию');
-  for (const p of plan) assert.equal(T.checkPose(p), null, p.label);
-  // радиус круга — смещение маркера
-  assert.ok(Math.abs(T.markerRadius(cal) - Math.hypot(12, 7)) < 1e-9);
-});
-
-test('смещение маркера: не задано — в «todo», круг больше клетки — ошибка калибровки', () => {
-  const def = T.checkCalibration(T.defaultCal('X'));
-  assert.deepEqual(def.list, []);
-  assert.ok(def.todo.some((t) => /Смещение маркера/.test(t)));
-  assert.deepEqual(T.checkCalibration({ ...T.defaultCal('X'), markerA: 10 }).todo, []);
-  assert.ok(T.checkCalibration({ ...T.defaultCal('X'), markerA: 25 }).list.some((t) => /не помещается в клетку/.test(t)));
-  assert.ok(T.checkCalibration({ ...T.defaultCal('X'), markerA: 10, paintFrom: 160 }).list.some((t) => /«влево до» < «середина»/.test(t)));
-});
-
-test('цепочка клетки: рука проходит точки по порядку, «по прямой» дробится на прямой отрезок', () => {
-  const cal = T.defaultCal('X');
-  cal.chains[4] = [
-    { x: 190, z: 160, angel: 185, paint_pov: 50 },             // зависание над полем
-    { x: 190, z: 100, angel: 185, paint_pov: 50 },             // спуск
-    { x: 190, z: 60, angel: 185, paint_pov: 50 },              // касание
-    { x: 215, z: 60, angel: 176, paint_pov: 50, line: true },  // линия ✕
-    { x: 215, z: 160, angel: 176, paint_pov: 50 },             // подъём
+  // наклонная прямая — в плоскости стола точки на отрезке
+  const c = T.defaultCal('X');
+  c.chains[0] = [
+    { x: 190, z: 160, angel: 185, closed: true },
+    { x: 215, z: 160, angel: 176, closed: true, line: true },
+    { x: 215, z: 60, angel: 176, closed: true },
+    { x: 215, z: 60, angel: 176, closed: false },
+    { x: 215, z: 160, angel: 176, closed: false },
   ];
-  const plan = T.drawPlan(cal, 4, 'X');
-  assert.equal(plan[plan.length - 1].label, 'на стоянку');
-  const body = plan.slice(0, -1);
-  assert.deepEqual([body[0].x, body[0].z, body[0].angel], [190, 160, 185]);
-  assert.deepEqual([body[body.length - 1].x, body[body.length - 1].z], [215, 160]);
-  for (const p of body) { assert.equal(p.cell, 4); assert.equal(p.paint_pov, 50); assert.equal(T.checkPose(p), null, p.label); }
-  // промежуточные точки линии — на прямой между концами (в плоскости стола), с шагом не больше step
-  const line = body.filter((p) => p.label === 'линия к точке 4');
-  assert.ok(line.length >= 5, 'отрезок ~26 мм при шаге 4 мм');
   const a = T.polarToArm(190, 185), b = T.polarToArm(215, 176);
-  for (const p of line) {
+  for (const p of T.chainPlan(c, 'cell', 0).filter((q) => /по прямой/.test(q.label))) {
     const q = T.polarToArm(p.x, p.angel);
     const cross = Math.abs((b.u - a.u) * (q.v - a.v) - (b.v - a.v) * (q.u - a.u)) / Math.hypot(b.u - a.u, b.v - a.v);
     assert.ok(cross < 2.5, 'отклонение от прямой ' + cross.toFixed(2) + ' мм (квантование команды)');
-    assert.equal(p.z, 60);
   }
-  // знак руки не важен — у клетки своя цепочка; другие клетки — по расчёту
-  assert.deepEqual(T.drawPlan(cal, 4, 'O'), plan);
-  assert.deepEqual(T.drawPlan(cal, 0, 'X'), T.drawPlan({ ...cal, chains: [] }, 0, 'X'));
-  assert.equal(T.checkChain(cal, 4), null);
-  assert.deepEqual(T.checkCalibration(cal).list, []);
+  assert.equal(T.checkChain(c, 'cell', 0), null);
 });
 
-test('цепочка должна начинаться и заканчиваться над листом и не выходить из рабочей зоны', () => {
+test('уборка — те же цепочки задом наперёд: забрать из клетки, вернуть в гнездо', () => {
+  const cal = armWithChains();
+  const back = T.returnPlan(cal, 4, 0);
+  for (const p of back) assert.equal(T.checkPose(p), null, p.label);
+  const marks = back.filter((p) => 'trayTo' in p);
+  assert.deepEqual(marks.map((p) => [p.trayTo, p.closed, p.z]), [['hand', true, 45], [null, false, 40]]);
+  // клетка задом наперёд: пустой сверху → вниз по прямой → закрыть → вверх по прямой
+  const fromCell = back.filter((p) => p.stage === 'pick');
+  assert.equal(fromCell[0].closed, false);
+  assert.equal(fromCell[0].z, 150);
+  assert.equal(fromCell[fromCell.length - 1].closed, true);
+  assert.ok(fromCell.some((p) => /по прямой/.test(p.label)), 'спуск к фигурке — по прямой, как при установке');
+  // флаг «по прямой» переезжает на соседнюю точку
+  const pts = cal.chains[4];
+  assert.deepEqual(T.reversePoints(pts).map((q) => q.line), [false, true, false, true]);
+  assert.deepEqual(T.reversePoints(T.reversePoints(pts)), pts.map((q) => ({ ...q, line: !!q.line })));
+  // фигурка уже в схвате — только в гнездо
+  const hand = T.returnPlan(cal, null, 0);
+  assert.ok(hand.every((p) => p.stage !== 'pick'));
+  assert.deepEqual(hand.filter((p) => 'trayTo' in p).map((p) => p.trayTo), [null]);
+});
+
+test('проверка цепочки: верх, схват в начале и в конце, одна смена схвата, рабочая зона', () => {
   const cal = T.defaultCal('O');
-  const hi = { x: 200, z: 160, angel: 180, paint_pov: 150 };
-  cal.chains[4] = [{ ...hi, z: 60 }, hi];
-  assert.match(T.checkChain(cal, 4), /первая точка .* ниже высоты проезда/);
-  cal.chains[4] = [hi, { ...hi, z: 60 }];
-  assert.match(T.checkChain(cal, 4), /последняя точка/);
-  cal.chains[4] = [hi, { ...hi, x: 100 }, hi];
-  assert.match(T.checkChain(cal, 4), /точка 2 из 3: вылет 100 мм ближе упора в базу/);
-  assert.ok(T.checkCalibration(cal).list.some((t) => /Б2: цепочка/.test(t)));
-  cal.chains[4] = [hi];
-  assert.match(T.checkChain(cal, 4), /меньше двух точек/);
-  // ○ поворотом paint_pov: рука стоит, меняется только paint_pov
-  cal.chains[4] = [hi, { ...hi, z: 60 }, { ...hi, z: 60, paint_pov: 1 }, { ...hi, z: 60, paint_pov: 300 }, hi];
-  assert.equal(T.checkChain(cal, 4), null);
-  assert.deepEqual(T.chainPlan(cal, 4, false).map((p) => p.paint_pov), [150, 150, 1, 300, 150]);
+  const hi = { x: 200, z: 160, angel: 180, closed: true };
+  const lo = { ...hi, z: 60 };
+  const set = (pts) => { cal.chains[4] = pts; return T.checkChain(cal, 'cell', 4); };
+  assert.equal(set([hi, lo, { ...lo, closed: false }, { ...hi, closed: false }]), null);
+  assert.match(set([lo, { ...hi, closed: false }]), /первая точка .* ниже высоты проезда/);
+  assert.match(set([hi, { ...lo, closed: false }]), /последняя точка/);
+  assert.match(set([{ ...hi, closed: false }, { ...hi, closed: false }]), /в начале схват должен быть закрыт/);
+  assert.match(set([hi, lo, hi]), /в конце схват должен быть открыт/);
+  assert.match(set([hi, { ...lo, closed: false }, lo, { ...lo, closed: false }, { ...hi, closed: false }]), /меняется 3 раза/);
+  assert.match(set([hi, { ...lo, x: 100 }, { ...lo, closed: false }, { ...hi, closed: false }]), /точка 2 из 4: вылет 100 мм ближе упора в базу/);
+  assert.match(set([hi]), /меньше двух точек/);
+  cal.slots[1] = [{ ...hi, closed: true }, { ...hi, closed: false }];
+  assert.match(T.checkChain(cal, 'slot', 1), /в начале схват должен быть открыт/);
+  assert.equal(T.checkChain(cal, 'slot', 2), null, 'нет цепочки — не ошибка цепочки');
 });
 
-test('черновик цепочки по расчёту рисует то же, что расчёт', () => {
-  for (const side of ['X', 'O']) {
-    const cal = { ...T.defaultCal(side), markerA: 10 };
-    for (const cell of [0, 4, 8]) {
-      const draft = T.draftChain(cal, cell, side);
-      assert.ok(draft[0].z >= T.heights(cal).travel && draft[draft.length - 1].z >= T.heights(cal).travel);
-      const withChain = { ...cal, chains: Array(9).fill(null) };
-      withChain.chains[cell] = draft;
-      assert.equal(T.checkChain(withChain, cell), null);
-      const byChain = T.drawPlan(withChain, cell, side), byCalc = T.drawPlan(cal, cell, side);
-      const key = (p) => [p.x, p.z, p.angel, p.paint_pov].join('/');
-      // зависание, спуски, концы линий и подъёмы совпадают; промежуточные точки линий — с точностью квантования
-      const chainEnds = byChain.filter((p) => !/линия к точке/.test(p.label)).map(key);
-      const calcEnds = byCalc.filter((p, i) => side === 'O' || !/рисует/.test(p.label) || byCalc[i + 1].label === 'маркер вверх').map(key);
-      assert.deepEqual(chainEnds, calcEnds, side + ' ' + cell);
-    }
-  }
+test('проверка руки: что не записано — в todo, ○ хватает 4 гнёзд', () => {
+  const x = T.checkCalibration(T.defaultCal('X'), 'X');
+  assert.deepEqual(x.list, []);
+  assert.equal(x.ready, false);
+  assert.ok(x.todo.some((t) => /Нет цепочек клеток: А3, Б3/.test(t)));
+  assert.ok(x.todo.some((t) => /гнёзд: 1, 2, 3, 4, 5 \(нужно 5\)/.test(t)));
+  const o = T.defaultCal('O');
+  for (let i = 0; i < 9; i++) { const c = T.overCell(o, i); o.chains[i] = T.draftChain(o, 'cell', { x: c.x, z: 50, angel: c.angel }); }
+  for (let k = 0; k < 4; k++) o.slots[k] = T.draftChain(o, 'slot', { x: 160 + k * 25, z: 40, angel: 300 });
+  const r = T.checkCalibration(o, 'O');
+  assert.deepEqual(r.list, []);
+  assert.deepEqual(r.todo, []);
+  assert.equal(r.ready, true);
+  o.chains[2] = [o.chains[2][0]];
+  const bad = T.checkCalibration(o, 'O');
+  assert.ok(bad.list.some((t) => /Клетка В3: в цепочке меньше двух точек/.test(t)));
+  assert.equal(bad.cells[2], 'в цепочке меньше двух точек');
+});
+
+test('лоток: откуда брать, восстановление поля после перезагрузки', () => {
+  const t = T.emptyTray();
+  assert.deepEqual(T.nextSlot(t.X), { slot: 0, inHand: false });
+  t.X = [4, 0, 'hand', null, null];
+  assert.deepEqual(T.nextSlot(t.X), { slot: 2, inHand: true }, 'сначала — фигурка из схвата');
+  t.X = [4, 0, 8, 1, 7];
+  assert.equal(T.nextSlot(t.X).slot, -1, 'лоток пуст');
+  // поле по лоткам
+  const tray = { X: [4, 0, null, null, null], O: [8, null, null, null, null] };
+  assert.deepEqual(T.boardFromTray(tray), ['X', null, null, null, 'X', null, null, null, 'O']);
+  assert.equal(T.boardFromTray({ X: [4, null, null, null, null], O: [4, null, null, null, null] }), null, 'две фигурки в клетке');
+  assert.equal(T.boardFromTray({ X: [null, null, null, null, null], O: [4, null, null, null, null] }), null, '○ не ходит первым');
+  // сохранённое значение чистится
+  assert.deepEqual(T.normalizeTray({ X: [4, 'hand', 12, 'x', -1, 3], O: 'мусор' }), { X: [4, 'hand', null, null, null], O: [null, null, null, null, null] });
+});
+
+test('калибровка рисования маркером переносится: поле и стоянка остаются, цепочки рисования удаляются', () => {
+  const old = {
+    side: 90, cu: 210, pitch: 48, parkAngel: 250, zDraw: 60, liftTravel: 40, markerA: 10, paintPov: 50, fix: [],
+    chains: [null, null, null, null, [{ x: 200, z: 160, angel: 180, paint_pov: 50 }, { x: 200, z: 60, angel: 180, paint_pov: 50 }], null, null, null, null],
+  };
+  const m = T.migrateCal(old);
+  assert.equal(m.dropped, true);
+  assert.deepEqual([m.cal.side, m.cal.cu, m.cal.pitch, m.cal.parkAngel], [90, 210, 48, 250]);
+  for (const k of ['zDraw', 'liftTravel', 'markerA', 'paintPov', 'fix']) assert.ok(!(k in m.cal), k);
+  assert.ok(m.cal.chains.every((c) => c === null));
+  const fresh = armWithChains();
+  assert.deepEqual(T.migrateCal(fresh), { cal: fresh, dropped: false }, 'новый формат не меняется');
+});
+
+test('у каждой копии калибровки свои массивы цепочек', () => {
+  const a = T.defaultCal('X'), b = T.defaultCal('X');
+  a.chains[4] = [{ x: 1 }];
+  a.slots[0] = [{ x: 1 }];
+  assert.equal(b.chains[4], null);
+  assert.equal(b.slots[0], null);
+  assert.equal(T.defaultCal('X').slots.length, T.SLOTS);
 });

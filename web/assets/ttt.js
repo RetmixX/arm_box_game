@@ -1,5 +1,5 @@
 /*
- * Крестики-нолики: правила, ход робота и геометрия рисования маркером.
+ * Крестики-нолики: правила, ход робота, цепочки «взять из гнезда → поставить в клетку» и лотки.
  * Чистые функции без DOM — работают и в браузере (window.TTT), и в node (module.exports).
  *
  * Системы координат
@@ -110,21 +110,6 @@
     return { bx: (c - 1) * pitch, by: (1 - r) * pitch };
   }
 
-  /**
-   * Поправка клетки в осях руки: { x — вылет, мм; z — высота касания, мм; a — поворот базы, ° }.
-   * Прибавляется к каждой команде этой клетки: наведение, касание, штрихи знака.
-   * Предел FIX_LIMITS — дальше неверны уже центр поля, шаг или высота касания.
-   */
-  const FIX_LIMITS = { x: 20, z: 10, a: 8 };
-  const NO_FIX = { x: 0, z: 0, a: 0 };
-
-  function cellFix(cal, i) {
-    const f = cal.fix && cal.fix[i];
-    if (!f || typeof f !== 'object' || Array.isArray(f)) return Object.assign({}, NO_FIX);
-    const n = (v) => (Number.isFinite(+v) ? Math.round(+v) : 0);
-    return { x: n(f.x), z: n(f.z), a: n(f.a) };
-  }
-
   const rotOf = (cal) => rad((+cal.side || 0) + (+cal.turn || 0));
 
   /** Поле → рука. side: 0 — рука снизу поля и смотрит вверх, 90 — слева, 180 — сверху, 270 — справа */
@@ -153,230 +138,159 @@
     return { u: x * Math.cos(t), v: x * Math.sin(t) };
   }
 
-  /* ============================ штрихи знаков ============================ */
+  /* ============================ команды руке ============================ */
 
-  /** Ломаная с шагом не больше step мм между точками */
-  function densify(pts, step) {
-    const out = [pts[0]];
-    for (let i = 1; i < pts.length; i++) {
-      const a = pts[i - 1], b = pts[i];
-      const n = Math.max(1, Math.ceil(Math.hypot(b.bx - a.bx, b.by - a.by) / step));
-      for (let k = 1; k <= n; k++) out.push({ bx: a.bx + ((b.bx - a.bx) * k) / n, by: a.by + ((b.by - a.by) * k) / n });
-    }
-    return out;
+  // POST /api/motors/pos/set: всё целое, gripper_state — bool
+  const LIMITS = { x: [10, 300], z: [10, 300], angel: [1, 360], pov_gripper: [1, 300] };
+
+  const SLOTS = 5; // гнёзд в лотке каждой руки
+  const NEED_SLOTS = { X: 5, O: 4 }; // ✕ ходит первым: за партию ✕ ставит до 5 фигурок, ○ — до 4
+
+  const cellName = (i) => 'АБВ'[i % 3] + (3 - Math.floor(i / 3));
+  const slotName = (k) => 'гнездо ' + (k + 1);
+
+  /** gripper_state для «схват закрыт»: что значит true — настройка руки gripTrue, как в пульте */
+  const gripState = (cal, closed) => (cal.gripTrue === 'closed' ? !!closed : !closed);
+
+  /**
+   * Команда руке из точки { x, z, angel, pov, closed }. Поза хранит и closed (для логики),
+   * и gripper_state (для backend). extra — служебные поля: target, stage, slot, trayTo.
+   */
+  function command(cal, p, label, extra) {
+    const pov = p.pov !== undefined && p.pov !== null ? +p.pov : +cal.pov;
+    return Object.assign({
+      x: Math.round(+p.x), z: Math.round(+p.z), angel: Math.round(+p.angel), pov_gripper: Math.round(pov),
+      closed: !!p.closed, gripper_state: gripState(cal, p.closed), label,
+    }, extra);
   }
 
-  /** Штрихи знака в координатах поля: крестик — две диагонали, нолик — окружность */
-  function markStrokes(cell, mark, cal) {
+  /** Стоянка; closed — оставить схват закрытым (рука держит фигурку) */
+  function park(cal, closed = false) {
+    return command(cal, { x: cal.parkX, z: cal.parkZ, angel: cal.parkAngel, closed }, 'на стоянку', { target: 'park' });
+  }
+
+  /** Над центром клетки на высоте проезда — по геометрии поля; начальная точка для записи цепочки */
+  function overCell(cal, cell, closed = false) {
     const c = cellBoard(cell, +cal.pitch);
-    const h = (+cal.pitch * clamp(+cal.size || 0.6, 0.2, 0.9)) / 2;
-    const step = clamp(+cal.step || 4, 1, 20);
-    if (mark === 'X') {
-      return [
-        densify([{ bx: c.bx - h, by: c.by + h }, { bx: c.bx + h, by: c.by - h }], step),
-        densify([{ bx: c.bx + h, by: c.by + h }, { bx: c.bx - h, by: c.by - h }], step),
-      ];
-    }
-    // ○ рисует поворот paint_pov: кончик маркера ходит по кругу радиусом смещения вокруг оси в центре клетки
-    const r = markerRadius(cal) || h;
-    const n = Math.max(12, Math.ceil((2 * Math.PI * r) / step));
-    const ring = [];
-    for (let k = 0; k <= n; k++) {
-      const t = Math.PI / 2 + (2 * Math.PI * k) / n;
-      ring.push({ bx: c.bx + r * Math.cos(t), by: c.by + r * Math.sin(t) });
-    }
-    return [ring];
-  }
-
-  /* ============================ план движения ============================ */
-
-  // paint_pov — поле /pos/set-paint (по умолчанию 50), диапазон как у pov_gripper
-  const LIMITS = { x: [10, 300], z: [10, 300], angel: [1, 360], pov_gripper: [1, 300], paint_pov: [1, 300] };
-
-  /**
-   * Высоты схвата (z команды), мм. Касание zDraw — абсолютное, подбирается на руке;
-   * проезд и подход — подъём кончика маркера над листом, поэтому от длины маркера не зависят.
-   */
-  function heights(cal) {
-    const d = +cal.zDraw;
-    return { draw: d, travel: d + +cal.liftTravel, approach: d + +cal.liftApproach };
-  }
-
-  /** Высота касания с поправкой на вылет: жёсткая насадка не прощает неровностей */
-  function drawZ(x, cal) {
-    return +cal.zDraw + (+cal.zTilt || 0) * ((x - +cal.cu) / 100);
-  }
-
-  /* ======================= маркер смещён от оси paint_pov ======================= */
-
-  /** Радиус круга, который описывает кончик маркера при повороте paint_pov, мм */
-  const markerRadius = (cal) => Math.hypot(+cal.markerA || 0, +cal.markerB || 0);
-
-  /**
-   * Кончик маркера смещён от оси поворота paint_pov: при paint_pov = cal.paintPov он на markerA мм
-   * дальше от базы и на markerB мм левее оси (если смотреть от базы вдоль руки). Смещение поворачивается
-   * вместе с базой, поэтому ось ставим так, чтобы в точку (u, v) попал именно кончик:
-   * кончик = (ρ + a)·e(t) + b·e⊥(t)  ⇒  ρ = √(R² − b²) − a,  t = ψ − atan2(b, ρ + a).
-   * Возвращает ось (u, v) или null, если точка ближе к оси базы, чем смещение поперёк.
-   */
-  function tipToAxis(u, v, cal) {
-    const a = +cal.markerA || 0, b = +cal.markerB || 0;
-    if (!a && !b) return { u, v };
-    const R = Math.hypot(u, v);
-    if (R <= Math.abs(b)) return null;
-    const rho = Math.sqrt(R * R - b * b) - a;
-    const t = Math.atan2(v, u) - Math.atan2(b, rho + a);
-    return { u: rho * Math.cos(t), v: rho * Math.sin(t) };
-  }
-
-  /** Где окажется кончик маркера при оси в (u, v) и paint_pov = cal.paintPov (обратное к tipToAxis) */
-  function axisToTip(u, v, cal) {
-    const a = +cal.markerA || 0, b = +cal.markerB || 0;
-    const t = Math.atan2(v, u), rho = Math.hypot(u, v);
-    return { u: (rho + a) * Math.cos(t) - b * Math.sin(t), v: (rho + a) * Math.sin(t) + b * Math.cos(t) };
-  }
-
-  /**
-   * Поза над точкой поля; fix — поправка клетки (высота — только для касания и рисования).
-   * По умолчанию в точку ставится кончик маркера; opt.axis — ось paint_pov (круг ○), opt.paint — свой paint_pov.
-   */
-  function pose(pt, z, cal, label, fix = NO_FIX, opt = {}) {
-    const a = boardToArm(pt.bx, pt.by, cal);
-    const ax = opt.axis ? a : tipToAxis(a.u, a.v, cal);
-    const p = ax ? armToPolar(ax.u, ax.v) : { x: NaN, angel: NaN };
-    const x = p.x + fix.x;
-    return {
-      x: Math.round(x),
-      z: Math.round(z === 'draw' ? drawZ(x, cal) + fix.z : z),
-      angel: Math.round(p.angel + fix.a),
-      pov_gripper: clamp(Math.round(+cal.pov), 1, 300),
-      paint_pov: Math.round(opt.paint !== undefined ? +opt.paint : +cal.paintPov),
-      label,
-    };
-  }
-
-  function park(cal) {
-    return { x: Math.round(+cal.parkX), z: Math.round(+cal.parkZ), angel: Math.round(+cal.parkAngel), pov_gripper: clamp(Math.round(+cal.pov), 1, 300), paint_pov: Math.round(+cal.paintPov), label: 'на стоянку' };
+    const a = boardToArm(c.bx, c.by, cal);
+    const p = armToPolar(a.u, a.v);
+    return command(cal, { x: p.x, z: cal.zSafe, angel: p.angel, closed }, 'над клеткой ' + cellName(cell), { target: 'c' + cell });
   }
 
   /** Подряд идущие одинаковые позы (после округления) не отправляем */
   function dedupe(list) {
-    return list.filter((p, i) => !i || ['x', 'z', 'angel', 'pov_gripper', 'paint_pov'].some((k) => p[k] !== list[i - 1][k]));
-  }
-
-  /**
-   * Нарисовать знак mark ('X' | 'O') в клетке cell.
-   * Возвращает позы — каждая одна команда руке; у каждой поле cell — над какой клеткой рука.
-   * К клетке и от неё рука идёт на высоте подхода и опускается/поднимается вертикально:
-   * поворот базы на низкой высоте — риск задеть маркером стол. Внутри клетки — высота проезда.
-   */
-  function drawPlan(cal, cell, mark, withPark = true) {
-    if (chainOf(cal, cell)) return chainPlan(cal, cell, withPark);
-    const { travel: T, approach: A } = heights(cal);
-    const f = cellFix(cal, cell);
-    const P = (pt, z, label, opt) => Object.assign(pose(pt, z, cal, label, f, opt), { cell });
-    const out = [];
-    if (mark === 'O') {
-      // ○ — поворотом paint_pov: ось в центре клетки, рука стоит, маркер обходит круг сам.
-      // Два прохода от середины: сначала влево (к paintFrom), потом вправо (к paintTo) —
-      // обратно через середину по уже нарисованной дуге, маркер не поднимается
-      const c = cellBoard(cell, +cal.pitch);
-      const mid = +cal.paintMid, from = +cal.paintFrom, to = +cal.paintTo;
-      const ax = (z, label, paint) => P(c, z, label, { axis: true, paint });
-      out.push(ax(A, 'подход к клетке ' + cellName(cell), mid));
-      out.push(ax(T, 'над клеткой ' + cellName(cell), mid));
-      out.push(ax('draw', 'маркер вниз', mid));
-      out.push(ax('draw', 'рисует: окружность влево (paint_pov ' + Math.round(mid) + ' → ' + Math.round(from) + ')', from));
-      out.push(ax('draw', 'рисует: окружность вправо (paint_pov ' + Math.round(from) + ' → ' + Math.round(to) + ')', to));
-      out.push(ax(T, 'маркер вверх', to));
-      out.push(ax(A, 'отход вверх', to));
-      if (withPark) out.push(park(cal));
-      return dedupe(out);
-    }
-    const strokes = markStrokes(cell, mark, cal);
-    out.push(P(strokes[0][0], A, 'подход к клетке ' + cellName(cell)));
-    strokes.forEach((s, si) => {
-      const name = mark === 'X' ? 'линия ' + (si + 1) + ' из 2' : 'окружность';
-      out.push(P(s[0], T, si ? 'к началу линии ' + (si + 1) : 'над клеткой ' + cellName(cell)));
-      out.push(P(s[0], 'draw', 'маркер вниз'));
-      for (let k = 1; k < s.length; k++) out.push(P(s[k], 'draw', 'рисует: ' + name));
-      out.push(P(s[s.length - 1], T, 'маркер вверх'));
-    });
-    const end = strokes[strokes.length - 1];
-    out.push(P(end[end.length - 1], A, 'отход вверх'));
-    if (withPark) out.push(park(cal));
-    return dedupe(out);
-  }
-
-  /**
-   * Над центром клетки: подход сверху (approach) → высота проезда; touch — ещё и опустить маркер до касания.
-   * approach = false — рука уже над этой клеткой, подниматься на высоту подхода незачем.
-   */
-  function cellPlan(cal, cell, touch, approach = true) {
-    const c = cellBoard(cell, +cal.pitch);
-    const f = cellFix(cal, cell);
-    const P = (z, label) => Object.assign(pose(c, z, cal, label, f), { cell });
-    const h = heights(cal);
-    const list = [];
-    if (approach) list.push(P(h.approach, 'подход к клетке ' + cellName(cell)));
-    list.push(P(h.travel, 'над клеткой ' + cellName(cell)));
-    if (touch) list.push(P('draw', 'касание'));
-    return list;
+    return list.filter((p, i) => !i || ['x', 'z', 'angel', 'pov_gripper', 'closed'].some((k) => p[k] !== list[i - 1][k]));
   }
 
   /* ============================ цепочки точек ============================ */
 
   /*
-   * Цепочка клетки — абсолютные команды руке, которые она проходит по порядку: зависание над полем,
-   * спуск, рисование знака, подъём. Точка: { x, z, angel, paint_pov, line }; line — идти к ней по прямой
-   * (отрезок дробится с шагом step мм: рука двигается по суставам, одной командой вышла бы дуга),
-   * иначе — одной командой. Цепочка своя у каждой клетки и руки; нет цепочки — рисуется по расчёту.
+   * Цепочка — абсолютные точки { x, z, angel, pov, closed, line }, которые рука проходит по порядку.
+   *   гнездо k (cal.slots[k]):  над гнездом, схват открыт → спуск → схват закрывается → подъём с фигуркой
+   *   клетка i (cal.chains[i]): над клеткой с фигуркой → спуск → схват открывается → подъём
+   * line — идти к точке по прямой от предыдущей (отрезок дробится с шагом step мм: рука двигается
+   * по суставам, одной командой вышла бы дуга). Обратный проход той же цепочки — обратное действие:
+   * клетка задом наперёд забирает фигурку, гнездо задом наперёд возвращает её в лоток.
    */
-  function chainOf(cal, cell) {
-    const c = cal.chains && cal.chains[cell];
+  const KINDS = { cell: 'chains', slot: 'slots' };
+  const targetOf = (kind, i) => (kind === 'cell' ? 'c' : 's') + i;
+  const placeName = (kind, i) => (kind === 'cell' ? 'клетка ' + cellName(i) : slotName(i));
+
+  function chainOf(cal, kind, i) {
+    const list = cal[KINDS[kind]];
+    const c = Array.isArray(list) ? list[i] : null;
     return Array.isArray(c) && c.length ? c : null;
   }
 
-  function chainPose(cal, cell, p, label) {
-    return {
-      x: Math.round(+p.x), z: Math.round(+p.z), angel: Math.round(+p.angel),
-      pov_gripper: clamp(Math.round(+cal.pov), 1, 300), paint_pov: Math.round(+p.paint_pov), label, cell,
-    };
+  /** Точки задом наперёд: «по прямой» относится к отрезку, поэтому флаг переезжает на соседнюю точку */
+  function reversePoints(pts) {
+    const r = pts.slice().reverse();
+    return r.map((p, k) => Object.assign({}, p, { line: k > 0 && !!r[k - 1].line }));
   }
 
-  /** Команды по цепочке клетки (+ стоянка) */
-  function chainPlan(cal, cell, withPark = true) {
-    const pts = chainOf(cal, cell) || [];
-    const step = clamp(+cal.step || 4, 1, 20);
+  const povOf = (cal, p) => (p.pov !== undefined && p.pov !== null ? +p.pov : +cal.pov);
+
+  function expand(cal, pts, name, extra) {
+    const step = clamp(+cal.step || 10, 1, 50);
     const out = [];
     pts.forEach((p, k) => {
-      const name = 'точка ' + (k + 1) + ' из ' + pts.length;
       const prev = pts[k - 1];
       if (p.line && prev) {
         const a = polarToArm(+prev.x, +prev.angel), b = polarToArm(+p.x, +p.angel);
-        const dz = +p.z - +prev.z, dp = +p.paint_pov - +prev.paint_pov;
+        const dz = +p.z - +prev.z;
+        const pa = povOf(cal, prev), pb = povOf(cal, p);
         const n = Math.max(1, Math.ceil(Math.hypot(b.u - a.u, b.v - a.v, dz) / step));
         for (let j = 1; j < n; j++) {
           const f = j / n;
           const q = armToPolar(a.u + (b.u - a.u) * f, a.v + (b.v - a.v) * f);
-          out.push(chainPose(cal, cell, { x: q.x, angel: q.angel, z: +prev.z + dz * f, paint_pov: +prev.paint_pov + dp * f }, 'линия к точке ' + (k + 1)));
+          // схват меняется только в самой точке, по дороге — как в предыдущей
+          out.push(command(cal, { x: q.x, angel: q.angel, z: +prev.z + dz * f, pov: pa + (pb - pa) * f, closed: prev.closed }, name + ': по прямой к точке ' + (k + 1), extra));
         }
       }
-      out.push(chainPose(cal, cell, p, name));
+      const grip = prev && !!prev.closed !== !!p.closed ? (p.closed ? 'схват закрывается' : 'схват открывается') : 'точка ' + (k + 1) + ' из ' + pts.length;
+      out.push(command(cal, p, name + ': ' + grip, extra));
     });
-    if (withPark) out.push(park(cal));
+    return out;
+  }
+
+  /** Команды по цепочке; reverse — задом наперёд (забрать из клетки / вернуть в гнездо) */
+  function chainPlan(cal, kind, i, reverse = false) {
+    let pts = chainOf(cal, kind, i) || [];
+    if (reverse) pts = reversePoints(pts);
+    return dedupe(expand(cal, pts, placeName(kind, i), { target: targetOf(kind, i) }));
+  }
+
+  /**
+   * Отметить в плане, где фигурка меняет место: первая поза после смены схвата на closed.
+   * runPlan, пройдя такую позу, записывает лоток: tray[slot] = trayTo.
+   */
+  function markTray(plan, closed, slot, trayTo, stage) {
+    plan.forEach((p) => { p.stage = stage; });
+    const k = plan.findIndex((p, j) => j > 0 && p.closed === closed && plan[j - 1].closed !== closed);
+    if (k >= 0) Object.assign(plan[k], { slot, trayTo });
+    return plan;
+  }
+
+  /**
+   * Ход: взять фигурку из гнезда slot и поставить в клетку cell, затем стоянка.
+   * opt.inHand — фигурка уже в схвате (прошлый ход сорвался после захвата): сразу к клетке.
+   */
+  function movePlan(cal, slot, cell, opt = {}) {
+    const pick = opt.inHand ? [] : markTray(chainPlan(cal, 'slot', slot), true, slot, 'hand', 'pick');
+    const place = markTray(chainPlan(cal, 'cell', cell), false, slot, cell, 'place');
+    const out = pick.concat(place);
+    if (opt.park !== false) out.push(Object.assign(park(cal), { stage: 'park' }));
     return dedupe(out);
   }
 
-  /** Ошибка цепочки клетки или null: начало и конец — над листом, все команды — в рабочей зоне */
-  function checkChain(cal, cell) {
-    const pts = chainOf(cal, cell);
+  /** Уборка: забрать фигурку из клетки cell (null — она уже в схвате) и вернуть в гнездо slot */
+  function returnPlan(cal, cell, slot, opt = {}) {
+    const pick = cell === null ? [] : markTray(chainPlan(cal, 'cell', cell, true), true, slot, 'hand', 'pick');
+    const place = markTray(chainPlan(cal, 'slot', slot, true), false, slot, null, 'place');
+    const out = pick.concat(place);
+    if (opt.park !== false) out.push(Object.assign(park(cal), { stage: 'park' }));
+    return dedupe(out);
+  }
+
+  /**
+   * Ошибка цепочки или null (нет цепочки — тоже null, это проверяет вызывающий).
+   * Начало и конец — не ниже высоты проезда; схват меняется ровно один раз: к гнезду рука
+   * приходит пустой и уносит фигурку, к клетке — наоборот. Все команды, включая точки прямых, — в рабочей зоне.
+   */
+  function checkChain(cal, kind, i) {
+    const pts = chainOf(cal, kind, i);
     if (!pts) return null;
     if (pts.length < 2) return 'в цепочке меньше двух точек';
-    const T = Math.round(heights(cal).travel);
-    if (+pts[0].z < T) return 'первая точка (z ' + pts[0].z + ') ниже высоты проезда ' + T + ' — цепочка должна начинаться над листом';
-    if (+pts[pts.length - 1].z < T) return 'последняя точка (z ' + pts[pts.length - 1].z + ') ниже высоты проезда ' + T + ' — цепочка должна заканчиваться над листом';
-    for (const p of chainPlan(cal, cell, false)) {
+    const H = Math.round(+cal.zSafe);
+    const first = pts[0], last = pts[pts.length - 1];
+    if (+first.z < H) return 'первая точка (z ' + first.z + ') ниже высоты проезда ' + H + ' — цепочка должна начинаться сверху';
+    if (+last.z < H) return 'последняя точка (z ' + last.z + ') ниже высоты проезда ' + H + ' — цепочка должна заканчиваться сверху';
+    const slot = kind === 'slot';
+    if (!!first.closed !== !slot) return slot ? 'в начале схват должен быть открыт — рука приходит за фигуркой пустой' : 'в начале схват должен быть закрыт — рука приносит фигурку';
+    if (!!last.closed !== slot) return slot ? 'в конце схват должен быть закрыт — рука уносит фигурку' : 'в конце схват должен быть открыт — фигурка остаётся в клетке';
+    const changes = pts.filter((p, k) => k && !!p.closed !== !!pts[k - 1].closed).length;
+    if (changes !== 1) return 'схват должен ' + (slot ? 'закрыться' : 'открыться') + ' один раз, а меняется ' + changes + ' раза';
+    for (const p of chainPlan(cal, kind, i)) {
       const e = checkPose(p);
       if (e) return p.label + ': ' + e;
     }
@@ -384,34 +298,37 @@
   }
 
   /**
-   * Черновик цепочки по текущей калибровке — чтобы не начинать с нуля: ✕ — зависание, по каждой линии
-   * спуск → линия до конца → подъём, отход вверх; ○ — те же команды, что при рисовании по расчёту.
+   * Черновик цепочки от точки захвата / установки bottom { x, z, angel, pov }: над ней на высоте проезда
+   * (и не ниже bottom + 30 мм) → по прямой вниз → схват → по прямой вверх.
    */
-  function draftChain(cal, cell, mark) {
-    const base = Object.assign({}, cal, { chains: [] });
-    const pt = (q, line) => ({ x: q.x, z: q.z, angel: q.angel, paint_pov: q.paint_pov, line: !!line });
-    if (mark === 'O') return drawPlan(base, cell, 'O', false).map((q) => pt(q, false));
-    const { travel: T, approach: A } = heights(base);
-    const f = cellFix(base, cell);
-    const P = (b, z) => pose(b, z, base, '', f);
-    const strokes = markStrokes(cell, 'X', base);
-    const out = [pt(P(strokes[0][0], A))];
-    for (const st of strokes) {
-      const end = st[st.length - 1];
-      out.push(pt(P(st[0], T)), pt(P(st[0], 'draw')), pt(P(end, 'draw'), true), pt(P(end, T)));
-    }
-    const last = strokes[strokes.length - 1];
-    out.push(pt(P(last[last.length - 1], A)));
-    return out.filter((q, i) => !i || ['x', 'z', 'angel', 'paint_pov'].some((k) => q[k] !== out[i - 1][k]));
+  function draftChain(cal, kind, bottom) {
+    const zb = Math.round(+bottom.z);
+    const b = { x: Math.round(+bottom.x), z: zb, angel: Math.round(+bottom.angel), pov: Math.round(povOf(cal, bottom)) };
+    const up = Object.assign({}, b, { z: Math.max(Math.round(+cal.zSafe), zb + 30) });
+    const carry = kind === 'cell'; // к клетке рука приходит с фигуркой
+    return [
+      Object.assign({}, up, { closed: carry, line: false }),
+      Object.assign({}, b, { closed: carry, line: true }),
+      Object.assign({}, b, { closed: !carry, line: false }),
+      Object.assign({}, up, { closed: !carry, line: true }),
+    ];
+  }
+
+  /** Нижняя точка цепочки — где стоит фигурка (для схемы стола) */
+  function chainBottom(cal, kind, i) {
+    const pts = chainOf(cal, kind, i);
+    if (!pts) return null;
+    return pts.reduce((m, p) => (+p.z < +m.z ? p : m), pts[0]);
   }
 
   /** Ошибка позы или null */
   function checkPose(p) {
-    const names = { x: 'вылет', z: 'высота', angel: 'угол базы', pov_gripper: 'поворот схвата', paint_pov: 'paint_pov' };
+    const names = { x: 'вылет', z: 'высота', angel: 'угол базы', pov_gripper: 'поворот схвата' };
     for (const k of Object.keys(LIMITS)) {
       const [lo, hi] = LIMITS[k];
       if (!(p[k] >= lo && p[k] <= hi)) return names[k] + ' ' + p[k] + ' вне ' + lo + '–' + hi;
     }
+    if (typeof p.gripper_state !== 'boolean') return 'не задано состояние схвата';
     const Kin = root.Kin;
     if (!Kin) return null;
     if (!Kin.isReachable(p.x, p.z, p.angel)) return 'точка x ' + p.x + ', z ' + p.z + ' недостижима';
@@ -426,95 +343,116 @@
   }
 
   /**
-   * Проверка калибровки: оба знака во всех клетках и стоянка.
-   * Возвращает { cells: [ошибка|null ×9], park, list — ошибки, todo — что ещё не откалибровано }
+   * Проверка руки side: цепочки всех клеток и гнёзд, стоянка, высота проезда.
+   * { cells: [ошибка|null ×9], slots: [ошибка|null ×5], park, list — ошибки, todo — что ещё не записано, ready }
    */
-  function checkCalibration(cal) {
-    const cells = [];
-    const list = [];
-    for (let i = 0; i < 9; i++) {
-      let err = null;
-      for (const mark of ['X', 'O']) {
-        for (const p of drawPlan(cal, i, mark, false)) { err = checkPose(p); if (err) break; }
-        if (err) break;
+  function checkCalibration(cal, side) {
+    const list = [], todo = [];
+    const need = NEED_SLOTS[side] || SLOTS;
+    const run = (kind, n, name) => {
+      const errs = [], missing = [];
+      for (let i = 0; i < n; i++) {
+        const e = checkChain(cal, kind, i);
+        errs.push(e);
+        if (e) list.push(name(i) + ': ' + e);
+        if (!chainOf(cal, kind, i)) missing.push(i);
       }
-      const ce = checkChain(cal, i);
-      if (ce) err = 'цепочка: ' + ce;
-      cells.push(err);
-      if (err) list.push('Клетка ' + cellName(i) + ': ' + err);
-      const f = cellFix(cal, i);
-      // у клетки с цепочкой поправка не используется
-      const over = chainOf(cal, i) ? [] : Object.keys(FIX_LIMITS).filter((k) => Math.abs(f[k]) > FIX_LIMITS[k]);
-      if (over.length) {
-        const names = { x: 'вылет', z: 'высота', a: 'база' };
-        list.push('Клетка ' + cellName(i) + ': поправка ' + over.map((k) => names[k] + ' ' + f[k] + ' (предел ±' + FIX_LIMITS[k] + ')').join(', ') + ' — проверьте центр поля, шаг и высоту касания');
-      }
-    }
+      return { errs, missing };
+    };
+    const cells = run('cell', 9, (i) => 'Клетка ' + cellName(i));
+    const slots = run('slot', SLOTS, (k) => 'Гнездо ' + (k + 1));
+    if (cells.missing.length) todo.push('Нет цепочек клеток: ' + cells.missing.map(cellName).join(', '));
+    const needMissing = slots.missing.filter((k) => k < need);
+    if (needMissing.length) todo.push('Нет цепочек гнёзд: ' + needMissing.map((k) => k + 1).join(', ') + ' (нужно ' + need + ')');
     const pk = checkPose(park(cal));
     if (pk) list.push('Стоянка: ' + pk);
-    if (!(+cal.liftTravel >= 15)) list.push('Подъём между штрихами — хотя бы 15 мм над листом');
-    const r = markerRadius(cal);
-    if (2 * r > 0.9 * +cal.pitch) list.push('Круг ○ диаметром ' + Math.round(2 * r) + ' мм не помещается в клетку ' + cal.pitch + ' мм — проверьте смещение маркера');
-    if (!(+cal.paintFrom < +cal.paintMid && +cal.paintMid < +cal.paintTo)) {
-      list.push('Круг ○: paint_pov должен идти «влево до» < «середина» < «вправо до» (сейчас ' + cal.paintFrom + ', ' + cal.paintMid + ', ' + cal.paintTo + ')');
-    }
-    const todo = [];
-    if (r < 3) todo.push('Смещение маркера от оси не задано: ○ рисуется поворотом paint_pov и без смещения выйдет точкой, ✕ — без компенсации смещения');
-    if (!(+cal.liftApproach >= +cal.liftTravel)) list.push('Подъём при подходе к клетке должен быть не меньше подъёма между штрихами');
-    return { cells, park: pk, list, todo };
+    if (!(+cal.zSafe >= LIMITS.z[0] && +cal.zSafe <= LIMITS.z[1])) list.push('Высота проезда ' + cal.zSafe + ' вне ' + LIMITS.z.join('–') + ' мм');
+    return { cells: cells.errs, slots: slots.errs, park: pk, list, todo, ready: !list.length && !todo.length };
   }
 
-  const cellName = (i) => 'АБВ'[i % 3] + (3 - Math.floor(i / 3));
+  /* ================================ лотки ================================ */
+
+  /*
+   * Лоток руки — SLOTS гнёзд; tray[k]: null — фигурка в гнезде, 0…8 — стоит в клетке, 'hand' — в схвате.
+   * Сохраняется, чтобы после перезагрузки страницы руки знали, что убирать.
+   */
+  const emptyTray = () => ({ X: Array(SLOTS).fill(null), O: Array(SLOTS).fill(null) });
+
+  function normalizeTray(saved) {
+    const t = emptyTray();
+    for (const side of ['X', 'O']) {
+      const src = saved && Array.isArray(saved[side]) ? saved[side] : [];
+      for (let k = 0; k < SLOTS; k++) {
+        const v = src[k];
+        t[side][k] = v === 'hand' || (Number.isInteger(v) && v >= 0 && v < 9) ? v : null;
+      }
+    }
+    return t;
+  }
+
+  /** Откуда брать фигурку: та, что уже в схвате, иначе первое полное гнездо; slot −1 — лоток пуст */
+  function nextSlot(tray) {
+    const h = tray.indexOf('hand');
+    return h >= 0 ? { slot: h, inHand: true } : { slot: tray.indexOf(null), inHand: false };
+  }
+
+  /** Поле по фигуркам из лотков; null — расклад невозможен (две фигурки в клетке, неверный счёт) */
+  function boardFromTray(tray) {
+    const b = Array(9).fill(null);
+    for (const side of ['X', 'O']) {
+      for (const v of tray[side]) {
+        if (!Number.isInteger(v)) continue;
+        if (b[v]) return null;
+        b[v] = side;
+      }
+    }
+    const x = b.filter((v) => v === 'X').length, o = b.filter((v) => v === 'O').length;
+    return x === o || x === o + 1 ? b : null;
+  }
+
+  /* ============================== калибровка ============================== */
 
   /** Калибровка по умолчанию без стороны (side 0); сторону руки задаёт DEFAULT_SIDE — см. defaultCal */
   const DEFAULT_CAL = {
     side: 0, turn: 0, cu: 200, cv: 0, pitch: 50,
-    // маркер торчит из держателя на 60 мм: кончик касается листа примерно при z схвата = 60
-    zDraw: 60, liftTravel: 40, liftApproach: 100, zTilt: 0,
-    size: 0.6, step: 4, pov: 150, paintPov: 50,
-    // смещение кончика маркера от оси paint_pov при paint_pov = paintPov;
-    // круг ○ — поворот paint_pov от середины влево до paintFrom, затем вправо до paintTo
-    markerA: 0, markerB: 0, paintMid: 150, paintFrom: 1, paintTo: 300,
+    zSafe: 150, // высота проезда: цепочки начинаются и кончаются не ниже, переезды — на ней
+    step: 10, pov: 150, gripTrue: 'open', // gripper_state = true — схват открыт (как в пульте)
     parkX: 160, parkZ: 200, parkAngel: 260,
   };
 
-  /** Где стоят руки на столе: лист вертикальный, рука ✕ у левого края, рука ○ у правого */
+  /** Где стоят руки на столе: рука ✕ у левого края поля, рука ○ у правого */
   const DEFAULT_SIDE = { X: 90, O: 270 };
 
+  // поля рисования маркером — до перехода на фигурки
+  const OLD_KEYS = ['zDraw', 'liftTravel', 'liftApproach', 'zTilt', 'size', 'paintPov', 'markerA', 'markerB', 'paintMid', 'paintFrom', 'paintTo', 'fix', 'zTravel', 'zApproach'];
+
   /**
-   * Сохранённая калибровка старого формата (абсолютные zTravel / zApproach) → подъёмы над листом.
-   * Касание z = 20 — старое значение по умолчанию для схвата без маркера: с маркером 60 мм оно вдавило бы
-   * маркер в стол, поэтому поднимаем до нового значения по умолчанию. Возвращает { cal, touchReset }.
+   * Калибровка времён рисования маркером → фигурки. Геометрия поля и стоянка остаются;
+   * цепочки рисования (точки с paint_pov) к фигуркам не подходят — удаляются. Возвращает { cal, dropped }.
    */
   function migrateCal(saved) {
-    if (!saved || typeof saved !== 'object') return { cal: saved, touchReset: false };
+    if (!saved || typeof saved !== 'object') return { cal: saved, dropped: false };
     const c = Object.assign({}, saved);
-    const old = !('liftTravel' in c) && ('zTravel' in c || 'zDraw' in c);
-    let touchReset = false;
-    if (old) {
-      const d = Number.isFinite(+c.zDraw) ? +c.zDraw : DEFAULT_CAL.zDraw;
-      c.liftTravel = Number.isFinite(+c.zTravel) ? Math.max(15, +c.zTravel - d) : DEFAULT_CAL.liftTravel;
-      c.liftApproach = Number.isFinite(+c.zApproach) ? Math.max(c.liftTravel, +c.zApproach - d) : Math.max(c.liftTravel, DEFAULT_CAL.liftApproach);
-      if (d === 20) { c.zDraw = DEFAULT_CAL.zDraw; touchReset = true; }
-    }
-    delete c.zTravel;
-    delete c.zApproach;
-    return { cal: c, touchReset };
+    OLD_KEYS.forEach((k) => delete c[k]);
+    const painted = Array.isArray(c.chains) && c.chains.some((pts) => Array.isArray(pts) && pts.some((p) => p && 'paint_pov' in p));
+    if (painted) c.chains = Array(9).fill(null);
+    return { cal: c, dropped: painted };
   }
 
-  /** Копия калибровки по умолчанию для руки side ('X' | 'O'); поправки клеток — свой массив на каждую копию */
+  /** Копия калибровки по умолчанию для руки side ('X' | 'O'); цепочки — свои массивы на каждую копию */
   const defaultCal = (side) => Object.assign({}, DEFAULT_CAL, {
     side: DEFAULT_SIDE[side],
-    fix: Array.from({ length: 9 }, () => Object.assign({}, NO_FIX)),
-    chains: Array(9).fill(null), // цепочки точек клеток (вкладка «Позиции»); null — по расчёту
+    chains: Array(9).fill(null), // клетки: поставить фигурку
+    slots: Array(SLOTS).fill(null), // гнёзда лотка: взять фигурку
   });
 
   const api = {
     LINES, other, result, free, turnOf, minimax, bestMoves, winningMove, chooseMove, LEVELS,
-    cellBoard, cellFix, FIX_LIMITS, boardToArm, armToBoard, armToPolar, polarToArm, markStrokes,
-    drawPlan, cellPlan, park, checkPose, checkCalibration, cellName, DEFAULT_CAL,
-    DEFAULT_SIDE, defaultCal, heights, migrateCal, tipToAxis, axisToTip, markerRadius,
-    chainOf, chainPlan, checkChain, draftChain,
+    cellBoard, boardToArm, armToBoard, armToPolar, polarToArm, cellName, slotName,
+    SLOTS, NEED_SLOTS, LIMITS, gripState, command, park, overCell, targetOf,
+    chainOf, chainPlan, reversePoints, movePlan, returnPlan, checkChain, draftChain, chainBottom,
+    checkPose, checkCalibration, emptyTray, normalizeTray, nextSlot, boardFromTray,
+    DEFAULT_CAL, DEFAULT_SIDE, defaultCal, migrateCal,
   };
   root.TTT = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
