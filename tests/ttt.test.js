@@ -177,23 +177,67 @@ test('проверка цепочки: верх, схват в начале и �
   assert.equal(T.checkChain(cal, 'slot', 2), null, 'нет цепочки — не ошибка цепочки');
 });
 
-test('проверка руки: что не записано — в todo, ○ хватает 4 гнёзд', () => {
-  const x = T.checkCalibration(T.defaultCal('X'), 'X');
-  assert.deepEqual(x.list, []);
-  assert.equal(x.ready, false);
-  assert.ok(x.todo.some((t) => /Нет цепочек клеток: А3, Б3/.test(t)));
-  assert.ok(x.todo.some((t) => /гнёзд: 1, 2, 3, 4, 5 \(нужно 5\)/.test(t)));
+test('проверка руки: без цепочек — по расчёту, ○ хватает 4 гнёзд, битая цепочка — ошибка', () => {
+  for (const side of ['X', 'O']) {
+    const r = T.checkCalibration(T.defaultCal(side), side);
+    assert.deepEqual(r.list, [], side + ': калибровка по умолчанию достаёт до всех клеток, гнёзд и стоянки');
+    assert.ok(r.todo.some((t) => /По расчёту: клеток 9, гнёзд /.test(t)));
+  }
   const o = T.defaultCal('O');
-  for (let i = 0; i < 9; i++) { const c = T.overCell(o, i); o.chains[i] = T.draftChain(o, 'cell', { x: c.x, z: 50, angel: c.angel }); }
-  for (let k = 0; k < 4; k++) o.slots[k] = T.draftChain(o, 'slot', { x: 160 + k * 25, z: 40, angel: 300 });
-  const r = T.checkCalibration(o, 'O');
-  assert.deepEqual(r.list, []);
-  assert.deepEqual(r.todo, []);
-  assert.equal(r.ready, true);
-  o.chains[2] = [o.chains[2][0]];
-  const bad = T.checkCalibration(o, 'O');
+  o.trayNA = 340; // пятое гнездо ○ вне зоны — руке ○ оно не нужно
+  o.tray1A = 280;
+  assert.ok(T.checkChain(o, 'slot', 4));
+  assert.equal(T.checkCalibration(o, 'O').slots[4], null);
+  assert.ok(T.checkCalibration(o, 'X').list.some((t) => /Гнездо 5: по расчёту: .*угол базы/.test(t)), 'руке ✕ пятое нужно');
+  const x = T.defaultCal('X');
+  x.chains[2] = [{ x: 200, z: 160, angel: 180, closed: true }];
+  const bad = T.checkCalibration(x, 'X');
   assert.ok(bad.list.some((t) => /Клетка В3: в цепочке меньше двух точек/.test(t)));
   assert.equal(bad.cells[2], 'в цепочке меньше двух точек');
+});
+
+test('по расчёту: клетка — центр по полю, гнёзда — на прямой от 1 до 5, путь как у черновика', () => {
+  const cal = T.defaultCal('X');
+  const c = T.boardToArm(0, 0, cal), b4 = T.calcBottom(cal, 'cell', 4);
+  const p = T.armToPolar(c.u, c.v);
+  assert.deepEqual([b4.x, b4.angel, b4.z], [Math.round(p.x), Math.round(p.angel), cal.zPlace]);
+  const s0 = T.calcBottom(cal, 'slot', 0), s4 = T.calcBottom(cal, 'slot', 4), s2 = T.calcBottom(cal, 'slot', 2);
+  assert.deepEqual([s0.x, s0.angel, s0.z], [cal.tray1X, cal.tray1A, cal.zPick]);
+  assert.deepEqual([s4.x, s4.angel], [cal.trayNX, cal.trayNA]);
+  const a = T.polarToArm(cal.tray1X, cal.tray1A), z = T.polarToArm(cal.trayNX, cal.trayNA), m = T.polarToArm(s2.x, s2.angel);
+  assert.ok(Math.hypot(m.u - (a.u + z.u) / 2, m.v - (a.v + z.v) / 2) < 2, 'среднее гнездо — посередине');
+  // нет цепочки — путь по расчёту, тот же, что «Черновик по расчёту»
+  assert.equal(T.chainOf(cal, 'cell', 4), null);
+  assert.deepEqual(T.pointsOf(cal, 'cell', 4), T.draftChain(cal, 'cell', b4));
+  const plan = T.movePlan(cal, 0, 4);
+  for (const q of plan) assert.equal(T.checkPose(q), null, q.label);
+  assert.deepEqual(plan.filter((q) => 'trayTo' in q).map((q) => [q.trayTo, q.z]), [['hand', cal.zPick], [4, cal.zPlace]]);
+  for (const q of T.returnPlan(cal, 4, 0)) assert.equal(T.checkPose(q), null, q.label);
+  // записанная цепочка важнее расчёта
+  const own = T.draftChain(cal, 'cell', { x: 210, z: 40, angel: 181 });
+  cal.chains[4] = own;
+  assert.deepEqual(T.pointsOf(cal, 'cell', 4), own);
+  assert.equal(T.chainBottom(cal, 'cell', 4).z, 40);
+});
+
+test('поправка клетки / гнезда прибавляется к точке захвата, высота проезда не меняется', () => {
+  const base = T.defaultCal('X'), cal = T.defaultCal('X');
+  cal.fix[0] = { x: 4, z: -2, a: 3 };
+  cal.slotFix[1] = { x: -5, z: 1, a: 0 };
+  const d = (kind, i) => [T.calcBottom(cal, kind, i), T.calcBottom(base, kind, i)];
+  let [f, o] = d('cell', 0);
+  assert.deepEqual([f.x - o.x, f.z - o.z, f.angel - o.angel], [4, -2, 3]);
+  [f, o] = d('slot', 1);
+  assert.deepEqual([f.x - o.x, f.z - o.z, f.angel - o.angel], [-5, 1, 0]);
+  assert.equal(T.calcChain(cal, 'cell', 0)[0].z, cal.zSafe, 'над клеткой — на высоте проезда');
+  assert.deepEqual(T.calcBottom(cal, 'cell', 4), T.calcBottom(base, 'cell', 4), 'другие клетки не тронуты');
+  assert.deepEqual(T.fixOf({ fix: [[3, 4]] }, 'cell', 0), { x: 0, z: 0, a: 0 }, 'чужой формат игнорируется');
+  cal.fix[8] = { x: 0, z: 0, a: 9 };
+  assert.ok(T.checkCalibration(cal, 'X').list.some((t) => /Клетка В1: поправка база 9/.test(t)));
+  const own = T.defaultCal('X');
+  own.fix[8] = { x: 0, z: 0, a: 9 };
+  own.chains[8] = T.calcChain(T.defaultCal('X'), 'cell', 8);
+  assert.ok(!T.checkCalibration(own, 'X').list.some((t) => /поправка/.test(t)), 'у клетки с цепочкой поправка не используется');
 });
 
 test('лоток: откуда брать, восстановление поля после перезагрузки', () => {
@@ -220,7 +264,7 @@ test('калибровка рисования маркером переноси�
   const m = T.migrateCal(old);
   assert.equal(m.dropped, true);
   assert.deepEqual([m.cal.side, m.cal.cu, m.cal.pitch, m.cal.parkAngel], [90, 210, 48, 250]);
-  for (const k of ['zDraw', 'liftTravel', 'markerA', 'paintPov', 'fix']) assert.ok(!(k in m.cal), k);
+  for (const k of ['zDraw', 'liftTravel', 'markerA', 'paintPov', 'fix']) assert.ok(!(k in m.cal), k + ' (поправки маркера к схвату не подходят)');
   assert.ok(m.cal.chains.every((c) => c === null));
   const fresh = armWithChains();
   assert.deepEqual(T.migrateCal(fresh), { cal: fresh, dropped: false }, 'новый формат не меняется');
@@ -230,6 +274,9 @@ test('у каждой копии калибровки свои массивы ц
   const a = T.defaultCal('X'), b = T.defaultCal('X');
   a.chains[4] = [{ x: 1 }];
   a.slots[0] = [{ x: 1 }];
+  a.fix[0].x = 3;
+  a.slotFix[0].z = 2;
+  assert.deepEqual([b.fix[0], b.slotFix[0]], [{ x: 0, z: 0, a: 0 }, { x: 0, z: 0, a: 0 }]);
   assert.equal(b.chains[4], null);
   assert.equal(b.slots[0], null);
   assert.equal(T.defaultCal('X').slots.length, T.SLOTS);

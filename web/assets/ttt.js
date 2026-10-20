@@ -169,13 +169,12 @@
     return command(cal, { x: cal.parkX, z: cal.parkZ, angel: cal.parkAngel, closed }, 'на стоянку', { target: 'park' });
   }
 
-  /** Над центром клетки на высоте проезда — по геометрии поля; начальная точка для записи цепочки */
-  function overCell(cal, cell, closed = false) {
-    const c = cellBoard(cell, +cal.pitch);
-    const a = boardToArm(c.bx, c.by, cal);
-    const p = armToPolar(a.u, a.v);
-    return command(cal, { x: p.x, z: cal.zSafe, angel: p.angel, closed }, 'над клеткой ' + cellName(cell), { target: 'c' + cell });
+  /** Над расчётной точкой клетки или гнезда (с поправкой) на высоте проезда */
+  function over(cal, kind, i, closed = false) {
+    const b = calcBottom(cal, kind, i);
+    return command(cal, Object.assign({}, b, { z: cal.zSafe, closed }), 'над: ' + placeName(kind, i), { target: targetOf(kind, i) });
   }
+  const overCell = (cal, cell, closed = false) => over(cal, 'cell', cell, closed);
 
   /** Подряд идущие одинаковые позы (после округления) не отправляем */
   function dedupe(list) {
@@ -201,6 +200,55 @@
     const c = Array.isArray(list) ? list[i] : null;
     return Array.isArray(c) && c.length ? c : null;
   }
+
+  /* ======================= по расчёту: нужна только калибровка ======================= */
+
+  /*
+   * Нет записанной цепочки — рука берёт и ставит по расчёту. Клетка — центр по геометрии поля,
+   * гнездо k — на прямой от гнезда 1 до гнезда 5 (их вылет и база — в калибровке). Высота захвата
+   * общая: для клеток zPlace, для гнёзд zPick. Поправка fix[i] / slotFix[k] = { x — вылет, мм;
+   * z — высота захвата, мм; a — база, ° } прибавляется к точке захвата; высота проезда не меняется.
+   * Дальше путь тот же, что у черновика: над точкой → по прямой вниз → схват → по прямой вверх.
+   */
+  const FIX_LIMITS = { x: 20, z: 10, a: 8 };
+  const NO_FIX = { x: 0, z: 0, a: 0 };
+  const FIX_KEYS = { cell: 'fix', slot: 'slotFix' };
+
+  function fixOf(cal, kind, i) {
+    const list = cal[FIX_KEYS[kind]];
+    const f = Array.isArray(list) ? list[i] : null;
+    if (!f || typeof f !== 'object' || Array.isArray(f)) return Object.assign({}, NO_FIX);
+    const n = (v) => (Number.isFinite(+v) ? Math.round(+v) : 0);
+    return { x: n(f.x), z: n(f.z), a: n(f.a) };
+  }
+
+  /** Центр гнезда k без поправки (x, angel): на прямой между гнездом 1 и последним */
+  function slotCenter(cal, k) {
+    const a = polarToArm(+cal.tray1X, +cal.tray1A), b = polarToArm(+cal.trayNX, +cal.trayNA);
+    const f = SLOTS > 1 ? k / (SLOTS - 1) : 0;
+    return armToPolar(a.u + (b.u - a.u) * f, a.v + (b.v - a.v) * f);
+  }
+
+  /** Точка захвата по расчёту { x, z, angel, pov } — с поправкой клетки / гнезда */
+  function calcBottom(cal, kind, i) {
+    let p, z;
+    if (kind === 'cell') {
+      const c = cellBoard(i, +cal.pitch);
+      const a = boardToArm(c.bx, c.by, cal);
+      p = armToPolar(a.u, a.v);
+      z = +cal.zPlace;
+    } else {
+      p = slotCenter(cal, i);
+      z = +cal.zPick;
+    }
+    const f = fixOf(cal, kind, i);
+    return { x: Math.round(p.x + f.x), z: Math.round(z + f.z), angel: Math.round(p.angel + f.a), pov: Math.round(+cal.pov) };
+  }
+
+  const calcChain = (cal, kind, i) => draftChain(cal, kind, calcBottom(cal, kind, i));
+
+  /** Чем пойдёт рука: записанная цепочка, иначе расчёт */
+  const pointsOf = (cal, kind, i) => chainOf(cal, kind, i) || calcChain(cal, kind, i);
 
   /** Точки задом наперёд: «по прямой» относится к отрезку, поэтому флаг переезжает на соседнюю точку */
   function reversePoints(pts) {
@@ -233,9 +281,12 @@
     return out;
   }
 
+  /** Команды по произвольным точкам (с «по прямой») — для проверок на руке */
+  const pathPlan = (cal, pts, name, extra) => dedupe(expand(cal, pts, name, extra));
+
   /** Команды по цепочке; reverse — задом наперёд (забрать из клетки / вернуть в гнездо) */
   function chainPlan(cal, kind, i, reverse = false) {
-    let pts = chainOf(cal, kind, i) || [];
+    let pts = pointsOf(cal, kind, i);
     if (reverse) pts = reversePoints(pts);
     return dedupe(expand(cal, pts, placeName(kind, i), { target: targetOf(kind, i) }));
   }
@@ -273,13 +324,19 @@
   }
 
   /**
-   * Ошибка цепочки или null (нет цепочки — тоже null, это проверяет вызывающий).
+   * Ошибка цепочки или null — записанной или, если её нет, расчётной (тогда с пометкой «по расчёту»).
    * Начало и конец — не ниже высоты проезда; схват меняется ровно один раз: к гнезду рука
    * приходит пустой и уносит фигурку, к клетке — наоборот. Все команды, включая точки прямых, — в рабочей зоне.
    */
   function checkChain(cal, kind, i) {
+    if (!chainOf(cal, kind, i)) {
+      for (const p of chainPlan(cal, kind, i)) {
+        const e = checkPose(p);
+        if (e) return 'по расчёту: ' + p.label + ': ' + e;
+      }
+      return null;
+    }
     const pts = chainOf(cal, kind, i);
-    if (!pts) return null;
     if (pts.length < 2) return 'в цепочке меньше двух точек';
     const H = Math.round(+cal.zSafe);
     const first = pts[0], last = pts[pts.length - 1];
@@ -314,10 +371,9 @@
     ];
   }
 
-  /** Нижняя точка цепочки — где стоит фигурка (для схемы стола) */
+  /** Нижняя точка цепочки (записанной или расчётной) — где стоит фигурка (для схемы стола) */
   function chainBottom(cal, kind, i) {
-    const pts = chainOf(cal, kind, i);
-    if (!pts) return null;
+    const pts = pointsOf(cal, kind, i);
     return pts.reduce((m, p) => (+p.z < +m.z ? p : m), pts[0]);
   }
 
@@ -343,27 +399,35 @@
   }
 
   /**
-   * Проверка руки side: цепочки всех клеток и гнёзд, стоянка, высота проезда.
-   * { cells: [ошибка|null ×9], slots: [ошибка|null ×5], park, list — ошибки, todo — что ещё не записано, ready }
+   * Проверка руки side: все клетки и нужные гнёзда (по цепочке или по расчёту), поправки, стоянка, высоты.
+   * { cells: [ошибка|null ×9], slots: [ошибка|null ×5], park, list — ошибки, todo — что ещё проверить, ready }
+   * Лишнее гнездо (у руки ○ — пятое) без цепочки не проверяется: рука туда не ходит.
    */
   function checkCalibration(cal, side) {
     const list = [], todo = [];
     const need = NEED_SLOTS[side] || SLOTS;
+    const names = { x: 'вылет', z: 'высота', a: 'база' };
     const run = (kind, n, name) => {
-      const errs = [], missing = [];
+      const errs = [];
+      let calc = 0;
       for (let i = 0; i < n; i++) {
-        const e = checkChain(cal, kind, i);
+        const used = kind === 'cell' || i < need || chainOf(cal, kind, i);
+        const e = used ? checkChain(cal, kind, i) : null;
         errs.push(e);
         if (e) list.push(name(i) + ': ' + e);
-        if (!chainOf(cal, kind, i)) missing.push(i);
+        if (used && !chainOf(cal, kind, i)) {
+          calc++;
+          const f = fixOf(cal, kind, i);
+          const over = Object.keys(FIX_LIMITS).filter((k) => Math.abs(f[k]) > FIX_LIMITS[k]);
+          if (over.length) list.push(name(i) + ': поправка ' + over.map((k) => names[k] + ' ' + f[k] + ' (предел ±' + FIX_LIMITS[k] + ')').join(', ') + ' — проверьте ' + (kind === 'cell' ? 'центр поля, шаг и высоту захвата' : 'положение гнёзд 1 и ' + SLOTS + ' и высоту захвата'));
+        }
       }
-      return { errs, missing };
+      return { errs, calc };
     };
     const cells = run('cell', 9, (i) => 'Клетка ' + cellName(i));
     const slots = run('slot', SLOTS, (k) => 'Гнездо ' + (k + 1));
-    if (cells.missing.length) todo.push('Нет цепочек клеток: ' + cells.missing.map(cellName).join(', '));
-    const needMissing = slots.missing.filter((k) => k < need);
-    if (needMissing.length) todo.push('Нет цепочек гнёзд: ' + needMissing.map((k) => k + 1).join(', ') + ' (нужно ' + need + ')');
+    if (cells.calc || slots.calc) todo.push('По расчёту: клеток ' + cells.calc + ', гнёзд ' + slots.calc + ' — проверьте на руке высоту захвата и центр клетки / гнезда');
+    if (+cal.zPlace + 30 > +cal.zSafe || +cal.zPick + 30 > +cal.zSafe) todo.push('Высота проезда меньше чем на 30 мм выше захвата — черновики поднимут её сами, но проверьте, что фигурки не задеваются');
     const pk = checkPose(park(cal));
     if (pk) list.push('Стоянка: ' + pk);
     if (!(+cal.zSafe >= LIMITS.z[0] && +cal.zSafe <= LIMITS.z[1])) list.push('Высота проезда ' + cal.zSafe + ' вне ' + LIMITS.z.join('–') + ' мм');
@@ -416,6 +480,10 @@
   const DEFAULT_CAL = {
     side: 0, turn: 0, cu: 200, cv: 0, pitch: 50,
     zSafe: 150, // высота проезда: цепочки начинаются и кончаются не ниже, переезды — на ней
+    // по расчёту: z схвата при захвате фигурки в клетке и в гнезде (гнездо выше на толщину дна);
+    // гнёзда — по прямой от гнезда 1 до гнезда 5 (вылет, база)
+    zPlace: 30, zPick: 32,
+    tray1X: 200, tray1A: 235, trayNX: 200, trayNA: 295,
     step: 10, pov: 150, gripTrue: 'open', // gripper_state = true — схват открыт (как в пульте)
     parkX: 160, parkZ: 200, parkAngel: 260,
   };
@@ -424,15 +492,17 @@
   const DEFAULT_SIDE = { X: 90, O: 270 };
 
   // поля рисования маркером — до перехода на фигурки
-  const OLD_KEYS = ['zDraw', 'liftTravel', 'liftApproach', 'zTilt', 'size', 'paintPov', 'markerA', 'markerB', 'paintMid', 'paintFrom', 'paintTo', 'fix', 'zTravel', 'zApproach'];
+  const OLD_KEYS = ['zDraw', 'liftTravel', 'liftApproach', 'zTilt', 'size', 'paintPov', 'markerA', 'markerB', 'paintMid', 'paintFrom', 'paintTo', 'zTravel', 'zApproach'];
 
   /**
    * Калибровка времён рисования маркером → фигурки. Геометрия поля и стоянка остаются;
-   * цепочки рисования (точки с paint_pov) к фигуркам не подходят — удаляются. Возвращает { cal, dropped }.
+   * цепочки рисования (точки с paint_pov) и поправки клеток (подбирались под кончик маркера, смещённый
+   * от оси) к схвату не подходят — удаляются. Возвращает { cal, dropped }.
    */
   function migrateCal(saved) {
     if (!saved || typeof saved !== 'object') return { cal: saved, dropped: false };
     const c = Object.assign({}, saved);
+    if (OLD_KEYS.some((k) => k in c)) delete c.fix;
     OLD_KEYS.forEach((k) => delete c[k]);
     const painted = Array.isArray(c.chains) && c.chains.some((pts) => Array.isArray(pts) && pts.some((p) => p && 'paint_pov' in p));
     if (painted) c.chains = Array(9).fill(null);
@@ -444,13 +514,15 @@
     side: DEFAULT_SIDE[side],
     chains: Array(9).fill(null), // клетки: поставить фигурку
     slots: Array(SLOTS).fill(null), // гнёзда лотка: взять фигурку
+    fix: Array.from({ length: 9 }, () => Object.assign({}, NO_FIX)), // поправки по расчёту
+    slotFix: Array.from({ length: SLOTS }, () => Object.assign({}, NO_FIX)),
   });
 
   const api = {
     LINES, other, result, free, turnOf, minimax, bestMoves, winningMove, chooseMove, LEVELS,
     cellBoard, boardToArm, armToBoard, armToPolar, polarToArm, cellName, slotName,
-    SLOTS, NEED_SLOTS, LIMITS, gripState, command, park, overCell, targetOf,
-    chainOf, chainPlan, reversePoints, movePlan, returnPlan, checkChain, draftChain, chainBottom,
+    SLOTS, NEED_SLOTS, LIMITS, gripState, command, park, over, overCell, targetOf,
+    FIX_LIMITS, fixOf, slotCenter, calcBottom, calcChain, pointsOf, pathPlan, chainOf, chainPlan, reversePoints, movePlan, returnPlan, checkChain, draftChain, chainBottom,
     checkPose, checkCalibration, emptyTray, normalizeTray, nextSlot, boardFromTray,
     DEFAULT_CAL, DEFAULT_SIDE, defaultCal, migrateCal,
   };

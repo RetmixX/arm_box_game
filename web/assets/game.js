@@ -204,13 +204,12 @@
     }
   }
 
-  /** Цепочка обязана быть записана и пройти проверку — иначе ход не начинается */
+  /** Путь к клетке / гнезду (записанная цепочка или расчёт) обязан пройти проверку — иначе ход не начинается */
   function needChain(side, kind, i) {
     const cal = S.cal[side];
-    const name = kind === 'cell' ? 'клетки ' + TTT.cellName(i) : 'гнезда ' + (i + 1);
-    if (!TTT.chainOf(cal, kind, i)) throw before('Рука ' + SIGN[side] + ': у ' + name + ' нет цепочки — запишите её на вкладке «Позиции»');
+    const name = kind === 'cell' ? 'клетка ' + TTT.cellName(i) : 'гнездо ' + (i + 1);
     const e = TTT.checkChain(cal, kind, i);
-    if (e) throw before('Рука ' + SIGN[side] + ', цепочка ' + name + ': ' + e + '. Исправьте на вкладке «Позиции»');
+    if (e) throw before('Рука ' + SIGN[side] + ', ' + name + ': ' + e + '. ' + (TTT.chainOf(cal, kind, i) ? 'Исправьте цепочку на вкладке «Позиции»' : 'Поправьте калибровку на вкладке «Настройка»'));
   }
 
   /** Взять фигурку из лотка (или ту, что уже в схвате) и поставить в клетку */
@@ -1037,7 +1036,13 @@
   const busyNow = () => testing || !!game.pending || !!active || game.cleaning;
 
   function renderTestState() {
-    $$('[data-test]').forEach((b) => { b.disabled = busyNow(); });
+    const busy = busyNow();
+    $$('[data-test], [data-fix]').forEach((b) => { b.disabled = busy; });
+    const cal = S.cal[S.edit];
+    const t = tSel();
+    const empty = (kind, i) => { const f = TTT.fixOf(cal, kind, i); return !f.x && !f.z && !f.a; };
+    $('#fix-reset').disabled = busy || empty(t.kind, t.i);
+    $('#fix-reset-all').disabled = Array.from({ length: 9 }, (_, i) => i).every((i) => empty('cell', i)) && Array.from({ length: TTT.SLOTS }, (_, k) => k).every((k) => empty('slot', k));
     const el = $('#test-state');
     if (testing && active) el.textContent = 'Рука ' + SIGN[active.side] + ': ' + active.label + '…';
   }
@@ -1055,6 +1060,7 @@
     $$('#cal-side button').forEach((b) => b.setAttribute('aria-checked', String(+b.dataset.v === +cal.side)));
     $$('#grip-true button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.v === cal.gripTrue)));
     $('#cal-reset').textContent = 'всю калибровку руки ' + SIGN[S.edit];
+    renderFix();
     renderSpeed();
     renderChecks();
   }
@@ -1065,8 +1071,8 @@
     const items = [];
     SIDES.forEach((side) => res[side].list.forEach((t) => items.push('<li>Рука ' + SIGN[side] + ' · ' + esc(t) + '</li>')));
     const todo = [];
-    SIDES.forEach((side) => res[side].todo.forEach((t) => todo.push('<li class="todo">Рука ' + SIGN[side] + ' · ' + esc(t) + ' — вкладка «Позиции»</li>')));
-    if (!items.length && !todo.length) items.push('<li class="ok">Цепочки всех клеток и гнёзд записаны, обе руки достают до них и до стоянки</li>');
+    SIDES.forEach((side) => res[side].todo.forEach((t) => todo.push('<li class="todo">Рука ' + SIGN[side] + ' · ' + esc(t) + '</li>')));
+    if (!items.length) items.push('<li class="ok">Обе руки достают до всех клеток, гнёзд и стоянки</li>');
     $('#checks').innerHTML = items.concat(todo).join('');
     $$('.fld').forEach((f) => f.classList.remove('bad'));
     dirty = true;
@@ -1166,7 +1172,7 @@
 
   $('#cal-reset').addEventListener('click', async () => {
     const side = S.edit;
-    if (!(await ask('Сбросить калибровку руки ' + SIGN[side] + '?', 'Сторона, центр поля, шаг, схват, высота проезда, стоянка и все цепочки клеток и гнёзд вернутся к значениям по умолчанию. Рука не двигается.', 'Сбросить всё'))) return;
+    if (!(await ask('Сбросить калибровку руки ' + SIGN[side] + '?', 'Сторона, центр поля, шаг, лоток, высоты, схват, стоянка, поправки и все цепочки клеток и гнёзд вернутся к значениям по умолчанию. Рука не двигается.', 'Сбросить всё'))) return;
     S.cal[side] = TTT.defaultCal(side);
     Object.assign(ch, { kind: null, i: null, pose: null, sel: -1 });
     save(); fillForm();
@@ -1212,10 +1218,50 @@
 
   /* ------------------------------ проверка на руке ------------------------------ */
 
-  $('#t-cell').innerHTML = Array.from({ length: 9 }, (_, i) => '<option value="' + i + '"' + (i === 4 ? ' selected' : '') + '>Клетка ' + TTT.cellName(i) + '</option>').join('');
+  // Цель проверки: клетка ('c0'…'c8') или гнездо ('s0'…'s4') — по расчёту, с поправкой (как раньше с маркером)
+  $('#t-cell').innerHTML =
+    '<optgroup label="Клетки">' + Array.from({ length: 9 }, (_, i) => '<option value="c' + i + '"' + (i === 4 ? ' selected' : '') + '>Клетка ' + TTT.cellName(i) + '</option>').join('') + '</optgroup>' +
+    '<optgroup label="Лоток">' + Array.from({ length: TTT.SLOTS }, (_, k) => '<option value="s' + k + '">Гнездо ' + (k + 1) + '</option>').join('') + '</optgroup>';
+  $('#t-cell').addEventListener('change', () => { renderFix(); dirty = true; });
 
   /** Текущая поза руки по нашим командам (схват — как в последней команде) */
   const lastPose = (side) => arms[side].last;
+
+  const tSel = () => { const v = $('#t-cell').value; return { kind: v[0] === 's' ? 'slot' : 'cell', i: +v.slice(1) }; };
+  const tName = (t) => (t.kind === 'cell' ? 'клетка ' + TTT.cellName(t.i) : 'гнездо ' + (t.i + 1));
+  const atTarget = (side, t) => { const l = lastPose(side); return !!l && l.target === TTT.targetOf(t.kind, t.i); };
+  const isDown = (side, t) => atTarget(side, t) && lastPose(side).z < Math.round(+S.cal[side].zSafe);
+  const heightKey = (t) => (t.kind === 'cell' ? 'zPlace' : 'zPick');
+
+  /**
+   * Над расчётной точкой цели на высоте подхода. Схват низко у этой цели — сначала вертикально вверх,
+   * чтобы не задеть фигурку сдвигом вбок. Схват не трогаем.
+   */
+  function overPlan(cal, side, t, label) {
+    const l = lastPose(side);
+    const closed = !!(l && l.closed);
+    const target = TTT.targetOf(t.kind, t.i);
+    const hover = TTT.calcChain(cal, t.kind, t.i)[0];
+    const plan = [];
+    if (isDown(side, t)) plan.push(TTT.command(cal, { x: l.x, z: hover.z, angel: l.angel, pov: l.pov_gripper, closed }, 'вверх', { target }));
+    plan.push(TTT.command(cal, Object.assign({}, hover, { closed }), label || 'над: ' + tName(t), { target }));
+    return plan;
+  }
+
+  /** Опустить схват по прямой до высоты захвата (схват не трогаем); уже внизу у цели — сразу в новую точку */
+  function downPlan(cal, side, t) {
+    const l = lastPose(side);
+    const closed = !!(l && l.closed);
+    const target = TTT.targetOf(t.kind, t.i);
+    const bottom = Object.assign({}, TTT.calcBottom(cal, t.kind, t.i), { closed, line: true });
+    if (isDown(side, t)) return TTT.pathPlan(cal, [{ x: l.x, z: l.z, angel: l.angel, pov: l.pov_gripper, closed }, bottom], 'высота захвата', { target });
+    const over = overPlan(cal, side, t);
+    const hover = over[over.length - 1];
+    return over.concat(TTT.pathPlan(cal, [{ x: hover.x, z: hover.z, angel: hover.angel, pov: hover.pov_gripper, closed }, bottom], 'вниз', { target }).slice(1));
+  }
+
+  const hasChain = (side, t) => !!TTT.chainOf(S.cal[side], t.kind, t.i);
+  const chainNote = (side, t) => (hasChain(side, t) ? ' У цели записана цепочка — в игре рука идёт по ней, а не по расчёту.' : '');
 
   async function test(kind) {
     if (busyNow()) return;
@@ -1223,9 +1269,16 @@
     const cal = S.cal[side];
     const l = lastPose(side);
     const closed = !!(l && l.closed);
+    const t = tSel();
     if (kind === 'over') {
-      const cell = +$('#t-cell').value;
-      await runTest(side, [TTT.overCell(cal, cell, closed)], 'над клеткой ' + TTT.cellName(cell), ' Высота проезда ' + Math.round(+cal.zSafe) + ' мм. Центр клетки — по геометрии поля; где именно ставить фигурку, задаёт цепочка на вкладке «Позиции».');
+      await runTest(side, overPlan(cal, side, t), 'над: ' + tName(t), ' По расчёту: центр ' + (t.kind === 'cell' ? 'клетки по геометрии поля' : 'гнезда на прямой от гнезда 1 до ' + TTT.SLOTS) + ', с поправкой.' + chainNote(side, t));
+    } else if (kind === 'down' || kind === 'h-' || kind === 'h+') {
+      if (kind !== 'down') {
+        cal[heightKey(t)] = +cal[heightKey(t)] + (kind === 'h+' ? 1 : -1);
+        save(); fillForm();
+      }
+      const b = TTT.calcBottom(cal, t.kind, t.i);
+      await runTest(side, downPlan(cal, side, t), tName(t) + ': схват на высоте захвата ' + b.z + ' мм', ' Губки должны охватывать пластину фигурки по середине; если нет — «Высота захвата» −1 / +1.' + chainNote(side, t));
     } else if (kind === 'open' || kind === 'close') {
       if (!l) { toast('Сначала отправьте руку над клеткой или на стоянку — схват меняется на месте'); return; }
       const step = TTT.command(cal, { x: l.x, z: l.z, angel: l.angel, pov: l.pov_gripper, closed: kind === 'close' }, kind === 'close' ? 'схват закрывается' : 'схват открывается', { target: l.target });
@@ -1252,6 +1305,79 @@
       render();
     }
   }
+
+  /* --------------------- поправка клетки / гнезда: вылет, высота, база --------------------- */
+
+  const FIX_NAMES = { x: 'вылет', z: 'высота', a: 'база' };
+  const fixKey = (t) => (t.kind === 'cell' ? 'fix' : 'slotFix');
+
+  function fixText(cal, t) {
+    const f = TTT.fixOf(cal, t.kind, t.i);
+    const sg = (v) => (v > 0 ? '+' : '−') + Math.abs(v);
+    const parts = [];
+    if (f.x) parts.push('вылет ' + sg(f.x) + ' мм');
+    if (f.z) parts.push('высота ' + sg(f.z) + ' мм');
+    if (f.a) parts.push('база ' + sg(f.a) + '°');
+    return tName(t)[0].toUpperCase() + tName(t).slice(1) + ': ' + (parts.length ? parts.join(', ') : 'без поправки');
+  }
+
+  function renderFix() {
+    const cal = S.cal[S.edit];
+    const t = tSel();
+    const b = TTT.calcBottom(cal, t.kind, t.i);
+    $('#fix-state').textContent = fixText(cal, t) + ' · захват: вылет ' + b.x + ', высота ' + b.z + ', база ' + b.angel + '°' + (hasChain(S.edit, t) ? ' · записана цепочка — поправка в игре не действует' : '');
+    $('#fix-reset').textContent = tName(t);
+    $('#h-name').textContent = t.kind === 'cell' ? 'захвата в клетках' : 'захвата в гнёздах';
+    renderTestState();
+  }
+
+  /**
+   * Задать поправку цели и сразу показать её на руке. Вылет и база — рука над целью (если схват внизу —
+   * сначала вверх, чтобы не сдвинуть фигурку); высота — опускает схват до высоты захвата.
+   */
+  async function setFix(t, next, key) {
+    if (busyNow()) return;
+    const side = S.edit;
+    const cal = S.cal[side];
+    for (const k of Object.keys(TTT.FIX_LIMITS)) {
+      if (Math.abs(next[k]) > TTT.FIX_LIMITS[k]) {
+        toast('Поправка: ' + FIX_NAMES[k] + ' — не больше ±' + TTT.FIX_LIMITS[k] + (k === 'a' ? '°' : ' мм') + '. Если нужно больше, поправьте ' + (t.kind === 'cell' ? 'центр поля, шаг' : 'гнёзда 1 и ' + TTT.SLOTS) + ' или высоту захвата');
+        return;
+      }
+    }
+    const n = t.kind === 'cell' ? 9 : TTT.SLOTS;
+    const fix = Array.from({ length: n }, (_, i) => TTT.fixOf(cal, t.kind, i));
+    fix[t.i] = next;
+    const trial = Object.assign({}, cal, { [fixKey(t)]: fix });
+    const plan = key === 'z' || (key === null && isDown(side, t)) ? downPlan(trial, side, t) : overPlan(trial, side, t);
+    for (const q of plan) {
+      const e = TTT.checkPose(q);
+      if (e) { toast('Так нельзя: ' + e); return; }
+    }
+    cal[fixKey(t)] = fix;
+    save(); renderFix(); renderChecks();
+    const last = plan[plan.length - 1];
+    await runTest(side, plan, fixText(cal, t), ' Команда: x ' + last.x + ' мм, z ' + last.z + ' мм, база ' + last.angel + '°.' + chainNote(side, t));
+  }
+
+  $$('[data-fix]').forEach((b) => b.addEventListener('click', (e) => {
+    const t = tSel();
+    const key = b.dataset.fix[0];
+    const f = TTT.fixOf(S.cal[S.edit], t.kind, t.i);
+    const m = e.shiftKey && key !== 'z' ? 5 : 1; // высоту — только по 1 мм
+    f[key] += (b.dataset.fix[1] === '+' ? 1 : -1) * m;
+    setFix(t, f, key);
+  }));
+  $('#fix-reset').addEventListener('click', () => setFix(tSel(), { x: 0, z: 0, a: 0 }, null));
+  $('#fix-reset-all').addEventListener('click', async () => {
+    const side = S.edit;
+    if (!(await ask('Обнулить поправки руки ' + SIGN[side] + '?', 'Вылет, высота и база всех клеток и гнёзд станут 0. Остальная калибровка и цепочки останутся. Рука не двигается.', 'Обнулить'))) return;
+    const d = TTT.defaultCal(side);
+    S.cal[side].fix = d.fix;
+    S.cal[side].slotFix = d.slotFix;
+    save(); fillForm();
+    $('#test-state').textContent = 'Рука ' + SIGN[side] + ': поправки всех клеток и гнёзд обнулены. Рука не двигалась.';
+  });
 
   /* ======================= цепочки клеток и гнёзд (вкладка «Позиции») ======================= */
 
@@ -1306,7 +1432,7 @@
     save(); renderChecks(); renderChain(); renderTeach();
   }
 
-  /** Выбрать клетку или гнездо: рука встаёт в первую точку цепочки; нет цепочки — над клеткой (гнездо — на месте) */
+  /** Выбрать клетку или гнездо: рука встаёт в первую точку цепочки; нет цепочки — над расчётной точкой */
   async function chainSelect(kind, i) {
     if (busyNow()) return;
     Object.assign(ch, { kind, i, sel: -1 });
@@ -1314,14 +1440,9 @@
     const l = lastPose(S.edit);
     const here = l ? asPose({ x: l.x, z: l.z, angel: l.angel, pov: l.pov_gripper, closed: l.closed }) : asPose(TTT.park(tCal()));
     if (pts) ch.pose = asPose(pts[0]);
-    else if (kind === 'cell') { const o = TTT.overCell(tCal(), i, here.closed); ch.pose = asPose(Object.assign({}, o, { pov: o.pov_gripper })); }
-    else ch.pose = here;
+    else ch.pose = asPose(Object.assign({}, TTT.calcChain(tCal(), kind, i)[0], { closed: here.closed }));
     renderChain(); renderTeach();
-    if (!pts && kind === 'slot') {
-      $('#teach-state').textContent = 'Гнездо ' + (i + 1) + ': цепочки нет, рука стоит на месте. Откройте схват, подведите его к фигурке в гнезде и нажмите «Черновик отсюда» — или записывайте точки по одной.';
-      return;
-    }
-    await chainRun(gotoPlan(ch.pose, pts ? 'точка 1' : 'над клеткой ' + TTT.cellName(i)), (pts ? 'точка 1, ' : '') + curName());
+    await chainRun(gotoPlan(ch.pose, pts ? 'точка 1' : 'над: ' + curName()), (pts ? 'точка 1, ' : 'по расчёту, над: ') + curName());
   }
 
   /** Ручной сдвиг одной командой: x / z (мм), a — база (°), r — поворот схвата (°) */
@@ -1362,9 +1483,9 @@
   function renderChain() {
     const list = $('#chain');
     const pts = curChain();
-    $('#chain-title').textContent = ch.kind === null ? 'Цепочка' : 'Цепочка: ' + curName() + (pts ? ' · ' + pts.length + ' точ.' : ' · нет');
+    $('#chain-title').textContent = ch.kind === null ? 'Цепочка' : 'Цепочка: ' + curName() + (pts ? ' · ' + pts.length + ' точ.' : ' · нет, по расчёту');
     if (!pts) {
-      list.innerHTML = '<li class="empty">' + (ch.kind === null ? 'Выберите клетку или гнездо слева.' : 'Цепочки нет. Подведите схват туда, где ' + (ch.kind === 'cell' ? 'фигурка должна встать' : 'фигурка лежит в гнезде') + ', и нажмите «Черновик отсюда» — или записывайте точки «+ Точка».') + '</li>';
+      list.innerHTML = '<li class="empty">' + (ch.kind === null ? 'Выберите клетку или гнездо слева.' : 'Цепочки нет — рука ходит по расчёту (калибровка на вкладке «Настройка»). Чтобы задать путь вручную: «Черновик по расчёту» и подправить точки, или подвести схват туда, где ' + (ch.kind === 'cell' ? 'фигурка должна встать' : 'фигурка лежит в гнезде') + ', и нажать «Черновик отсюда».') + '</li>';
       return;
     }
     const names = { x: 'Вылет', z: 'Высота', angel: 'База', pov: 'Поворот схвата' };
@@ -1411,10 +1532,10 @@
       b.classList.toggle('opt', kind === 'slot' && i >= need && !pts);
       b.disabled = busy;
       b.title = err ? 'Цепочка: ' + err : '';
-      b.querySelector('.st').textContent = err ? '✗ ошибка' : pts ? '✓ ' + pts.length + ' точ.' : kind === 'slot' && i >= need ? 'не нужно' : 'нет';
+      b.querySelector('.st').textContent = err ? '✗ ошибка' : pts ? '✓ ' + pts.length + ' точ.' : kind === 'slot' && i >= need ? 'не нужно' : 'по расчёту';
     });
-    $('#teach-progress').textContent = 'Рука ' + SIGN[S.edit] + ': клетки ' + count.cell + ' из 9, гнёзда ' + count.slot + ' из ' + need + '. ' +
-      (count.cell < 9 || count.slot < need ? 'Без цепочки клетки или нужного гнезда ход не начнётся.' : 'Всё записано — можно играть.');
+    $('#teach-progress').textContent = 'Рука ' + SIGN[S.edit] + ': цепочки у ' + count.cell + ' из 9 клеток и ' + count.slot + ' из ' + need + ' гнёзд. ' +
+      (count.cell < 9 || count.slot < need ? 'Остальные — по расчёту: центр поля, лоток, высоты захвата и поправки на вкладке «Настройка».' : 'Все пути записаны вручную.');
     const q = ch.pose;
     $('#tn-cell').textContent = ch.kind === null ? '—' : ch.kind === 'cell' ? TTT.cellName(ch.i) : 'г' + (ch.i + 1);
     $('#tn-x').textContent = q ? q.x : '—';
@@ -1425,7 +1546,7 @@
     const H = zSafe();
     $('#tn-note').textContent = q ? 'Высота проезда — ' + H + ' мм: цепочка начинается и кончается не ниже.' + (q.z < H ? ' Сейчас ниже — сдвиг вбок может задеть фигурки.' : '') : '';
     const none = ch.kind === null;
-    $$('[data-tj], #chain-add, #chain-add-line, #chain-draft, #grip-open, #grip-close').forEach((b) => { b.disabled = busy || none; });
+    $$('[data-tj], #chain-add, #chain-add-line, #chain-draft, #chain-calc, #grip-open, #grip-close').forEach((b) => { b.disabled = busy || none; });
     $('#grip-open').setAttribute('aria-pressed', String(!!q && !q.closed));
     $('#grip-close').setAttribute('aria-pressed', String(!!q && q.closed));
     $('#chain-play').disabled = busy || !curChain();
@@ -1483,12 +1604,20 @@
       : 'Черновик для «' + curName() + '»: ' + draft.length + ' точки от текущего положения. Проверьте «▶ Проиграть» и «◀ Обратно»; точку можно подправить — «⌖» ведёт в неё руку, «✎» записывает текущее положение.';
   });
 
+  $('#chain-calc').addEventListener('click', async () => {
+    if (busyNow() || ch.kind === null) return;
+    if (curChain() && !(await ask('Заменить цепочку: ' + curName() + '?', 'Точки заменятся расчётом из калибровки (центр, лоток, высота захвата, поправка). Рука не двигается.', 'Заменить'))) return;
+    ch.sel = -1;
+    setChain(TTT.calcChain(tCal(), ch.kind, ch.i));
+    $('#teach-state').textContent = 'Черновик по расчёту для «' + curName() + '»: ' + curChain().length + ' точки. Подправьте точки — «⌖» ведёт руку в точку, «✎» записывает текущее положение — и проверьте «▶ Проиграть».';
+  });
+
   $('#chain-clear').addEventListener('click', async () => {
     if (busyNow() || !curChain()) return;
-    if (!(await ask('Очистить цепочку: ' + curName() + '?', 'Без цепочки рука не сможет ' + (ch.kind === 'cell' ? 'ставить фигурку в эту клетку' : 'брать фигурку из этого гнезда') + '. Рука не двигается.', 'Очистить'))) return;
+    if (!(await ask('Очистить цепочку: ' + curName() + '?', 'Рука будет ' + (ch.kind === 'cell' ? 'ставить фигурку в эту клетку' : 'брать фигурку из этого гнезда') + ' по расчёту. Рука не двигается.', 'Очистить'))) return;
     ch.sel = -1;
     setChain(null);
-    $('#teach-state').textContent = 'Цепочка «' + curName() + '» очищена.';
+    $('#teach-state').textContent = 'Цепочка «' + curName() + '» очищена — дальше по расчёту.';
   });
 
   $('#chain-clear-all').addEventListener('click', async () => {

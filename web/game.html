@@ -138,7 +138,7 @@
     <section class="card setup-view">
       <div class="card-head">
         <h2>Стол сверху</h2>
-        <span class="legend"><i class="lg lg-ok"></i>цепочка есть <i class="lg lg-bad"></i>ошибка</span>
+        <span class="legend"><i class="lg lg-ok"></i>точка захвата <i class="lg lg-bad"></i>ошибка</span>
       </div>
       <canvas id="cv-setup" aria-label="Схема стола для калибровки"></canvas>
       <ul class="checks" id="checks"></ul>
@@ -202,7 +202,7 @@
         </fieldset>
 
         <fieldset>
-          <legend>Схват <small>фигурку рука берёт и ставит по цепочкам — вкладка «Позиции»</small></legend>
+          <legend>Схват</legend>
           <div class="row wrap">
             <span class="hint">gripper_state = true — это</span>
             <div class="seg sm" id="grip-true" role="radiogroup" aria-label="Что значит gripper_state = true">
@@ -212,9 +212,22 @@
           <div class="grid">
             <label class="fld"><span>Высота проезда</span><input data-k="zSafe" inputmode="decimal"><em>мм, z схвата</em></label>
             <label class="fld"><span>Шаг прямой</span><input data-k="step" inputmode="decimal"><em>мм</em></label>
-            <label class="fld"><span>Поворот схвата</span><input data-k="pov" inputmode="decimal"><em>° — стоянка, «над клеткой»</em></label>
+            <label class="fld"><span>Поворот схвата</span><input data-k="pov" inputmode="decimal"><em>°</em></label>
           </div>
           <p class="hint">Высота проезда — на ней рука переезжает между лотком, клетками и стоянкой; фигурка в схвате не должна задевать другие. Цепочки начинаются и кончаются не ниже. Точки «по прямой» дробятся с шагом прямой: меньше шаг — ровнее, но медленнее.</p>
+        </fieldset>
+
+        <fieldset>
+          <legend>По расчёту <small>для клеток и гнёзд без записанной цепочки</small></legend>
+          <div class="grid">
+            <label class="fld"><span>Высота захвата в клетке</span><input data-k="zPlace" inputmode="decimal"><em>мм, z схвата</em></label>
+            <label class="fld"><span>Высота захвата в гнезде</span><input data-k="zPick" inputmode="decimal"><em>мм, z схвата</em></label>
+            <label class="fld"><span>Гнездо 1: вылет</span><input data-k="tray1X" inputmode="decimal"><em>мм</em></label>
+            <label class="fld"><span>Гнездо 1: база</span><input data-k="tray1A" inputmode="decimal"><em>°</em></label>
+            <label class="fld"><span>Гнездо 5: вылет</span><input data-k="trayNX" inputmode="decimal"><em>мм</em></label>
+            <label class="fld"><span>Гнездо 5: база</span><input data-k="trayNA" inputmode="decimal"><em>°</em></label>
+          </div>
+          <p class="hint">Клетка — центр по геометрии поля, гнёзда 2–4 — поровну на прямой между гнездом 1 и 5. Рука приходит сверху на высоте проезда, опускается по прямой до высоты захвата, сжимает или отпускает схват и поднимается. Плитки гнёзд ставьте пластиной фигурки поперёк руки — схват подходит к каждому гнезду с одним поворотом.</p>
         </fieldset>
 
         <fieldset>
@@ -238,19 +251,45 @@
         </fieldset>
 
         <fieldset>
-          <legend>Проверка на руке</legend>
+          <legend>Проверка на руке <small>по расчёту</small></legend>
           <div class="row wrap">
-            <select class="input select" id="t-cell" aria-label="Клетка"></select>
-            <button class="btn sm" data-test="over">Над клеткой</button>
+            <select class="input select" id="t-cell" aria-label="Клетка или гнездо"></select>
+            <button class="btn sm" data-test="over">Над</button>
+            <button class="btn sm" data-test="down">Опустить</button>
             <button class="btn sm ghost" data-test="open">Открыть схват</button>
             <button class="btn sm ghost" data-test="close">Закрыть схват</button>
-            <button class="btn sm ghost" data-test="park">На стоянку</button>
           </div>
           <div class="row wrap">
-            <span class="hint">Сбросить</span>
-            <button class="btn sm ghost danger" id="cal-reset" title="Вернуть всю калибровку руки к заводской: сторона, центр поля, схват, стоянка, все цепочки">всю калибровку руки ✕</button>
+            <span class="hint">Высота <span id="h-name">захвата в клетках</span></span>
+            <span class="row tight">
+              <button class="btn sm ghost round" data-test="h-" title="Ниже на 1 мм — для всех клеток (или всех гнёзд)" aria-label="Высота захвата минус 1 мм">−1</button>
+              <button class="btn sm ghost round" data-test="h+" title="Выше на 1 мм — для всех клеток (или всех гнёзд)" aria-label="Высота захвата плюс 1 мм">+1</button>
+            </span>
           </div>
-          <p class="hint" id="test-state">«Над клеткой» ставит схват над центром клетки по геометрии поля на высоте проезда — так удобно проверить сторону, центр и шаг. Схват открывается и закрывается на месте.</p>
+          <p class="hint">Поправка выбранной клетки или гнезда — к общей калибровке</p>
+          <div class="row wrap fix-row">
+            <span class="row tight"><span class="hint">вылет</span>
+              <button class="btn sm ghost round" data-fix="x-" title="Вылет −1 мм (Shift — 5)" aria-label="Вылет минус 1 мм">−</button>
+              <button class="btn sm ghost round" data-fix="x+" title="Вылет +1 мм (Shift — 5)" aria-label="Вылет плюс 1 мм">+</button>
+            </span>
+            <span class="row tight"><span class="hint">высота</span>
+              <button class="btn sm ghost round" data-fix="z-" title="Захват ниже на 1 мм" aria-label="Высота минус 1 мм">−</button>
+              <button class="btn sm ghost round" data-fix="z+" title="Захват выше на 1 мм" aria-label="Высота плюс 1 мм">+</button>
+            </span>
+            <span class="row tight"><span class="hint">база</span>
+              <button class="btn sm ghost round" data-fix="a-" title="База −1° — по часовой (Shift — 5)" aria-label="База минус 1 градус">−</button>
+              <button class="btn sm ghost round" data-fix="a+" title="База +1° — против часовой (Shift — 5)" aria-label="База плюс 1 градус">+</button>
+            </span>
+          </div>
+          <p class="hint" id="fix-state">без поправки</p>
+          <div class="row wrap">
+            <span class="hint">Сбросить</span>
+            <button class="btn sm ghost" id="fix-reset" title="Обнулить поправку выбранной клетки или гнезда">клетку Б2</button>
+            <button class="btn sm ghost" id="fix-reset-all" title="Обнулить поправки всех клеток и гнёзд этой руки">все поправки</button>
+            <button class="btn sm ghost danger" id="cal-reset" title="Вернуть всю калибровку руки к заводской: сторона, центр поля, лоток, высоты, схват, стоянка, поправки, все цепочки">всю калибровку руки ✕</button>
+            <button class="btn sm ghost right" data-test="park">На стоянку</button>
+          </div>
+          <p class="hint" id="test-state">Порядок: «Над» — проверить центр клетки или гнезда; «Опустить» — схват на высоте захвата, губки должны охватывать пластину фигурки; затем «Закрыть схват». Высота −1 / +1 меняет высоту захвата сразу для всех клеток (или всех гнёзд); поправка — только для выбранной: вылет и база двигают руку над целью, высота опускает схват.</p>
         </fieldset>
 
         <fieldset>
@@ -338,8 +377,9 @@
 
       <div class="chain-head"><b id="chain-title">Цепочка</b><span class="hint">№ · вылет · высота · база · поворот</span></div>
       <ol class="chain" id="chain"></ol>
-      <p class="hint" id="teach-state">Выберите клетку или гнездо слева. Гнездо: схват открыт → над фигуркой → вниз → закрыть → вверх. Клетка: с фигуркой над клеткой → вниз → открыть → вверх. Быстрее всего — опустить схват к фигурке (или к месту в клетке) и нажать «Черновик отсюда». После партии руки проходят те же цепочки задом наперёд — проверьте «◀ Обратно».</p>
+      <p class="hint" id="teach-state">Цепочки не обязательны: без цепочки рука ходит по расчёту (калибровка на вкладке «Настройка»). Цепочка нужна, если расчёт где-то не попадает. Гнездо: схват открыт → над фигуркой → вниз → закрыть → вверх. Клетка: с фигуркой над клеткой → вниз → открыть → вверх. Начните с «Черновика по расчёту» или опустите схват к фигурке и нажмите «Черновик отсюда». После партии руки проходят те же пути задом наперёд — проверьте «◀ Обратно».</p>
       <div class="row wrap">
+        <button class="btn sm ghost" id="chain-calc" title="Заполнить цепочку расчётом из калибровки — дальше подправить точки">Черновик по расчёту</button>
         <button class="btn sm ghost" id="chain-draft" title="Заполнить цепочку от текущего положения схвата: над ним → вниз → схват → вверх">Черновик отсюда</button>
         <button class="btn sm ghost" id="chain-clear">Очистить</button>
         <button class="btn sm ghost danger" id="chain-clear-all">Все цепочки руки</button>
