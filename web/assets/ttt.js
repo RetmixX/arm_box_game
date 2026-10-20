@@ -206,12 +206,13 @@
   /*
    * Нет записанной цепочки — рука берёт и ставит по расчёту. Клетка — центр по геометрии поля,
    * гнездо k — на прямой от гнезда 1 до гнезда 5 (их вылет и база — в калибровке). Высота захвата
-   * общая: для клеток zPlace, для гнёзд zPick. Поправка fix[i] / slotFix[k] = { x — вылет, мм;
-   * z — высота захвата, мм; a — база, ° } прибавляется к точке захвата; высота проезда не меняется.
+   * общая: для клеток zPlace, для гнёзд zPick; поворот схвата общий — pov. Поправка fix[i] / slotFix[k] =
+   * { x — вылет, мм; z — высота захвата, мм; a — база, °; r — поворот схвата, ° } прибавляется к точке
+   * захвата; высота проезда не меняется.
    * Дальше путь тот же, что у черновика: над точкой → по прямой вниз → схват → по прямой вверх.
    */
-  const FIX_LIMITS = { x: 20, z: 10, a: 8 };
-  const NO_FIX = { x: 0, z: 0, a: 0 };
+  const FIX_LIMITS = { x: 20, z: 10, a: 8, r: 45 };
+  const NO_FIX = { x: 0, z: 0, a: 0, r: 0 };
   const FIX_KEYS = { cell: 'fix', slot: 'slotFix' };
 
   function fixOf(cal, kind, i) {
@@ -219,7 +220,7 @@
     const f = Array.isArray(list) ? list[i] : null;
     if (!f || typeof f !== 'object' || Array.isArray(f)) return Object.assign({}, NO_FIX);
     const n = (v) => (Number.isFinite(+v) ? Math.round(+v) : 0);
-    return { x: n(f.x), z: n(f.z), a: n(f.a) };
+    return { x: n(f.x), z: n(f.z), a: n(f.a), r: n(f.r) };
   }
 
   /** Центр гнезда k без поправки (x, angel): на прямой между гнездом 1 и последним */
@@ -242,7 +243,7 @@
       z = +cal.zPick;
     }
     const f = fixOf(cal, kind, i);
-    return { x: Math.round(p.x + f.x), z: Math.round(z + f.z), angel: Math.round(p.angel + f.a), pov: Math.round(+cal.pov) };
+    return { x: Math.round(p.x + f.x), z: Math.round(z + f.z), angel: Math.round(p.angel + f.a), pov: Math.round(+cal.pov + f.r) };
   }
 
   const calcChain = (cal, kind, i) => draftChain(cal, kind, calcBottom(cal, kind, i));
@@ -406,7 +407,7 @@
   function checkCalibration(cal, side) {
     const list = [], todo = [];
     const need = NEED_SLOTS[side] || SLOTS;
-    const names = { x: 'вылет', z: 'высота', a: 'база' };
+    const names = { x: 'вылет', z: 'высота', a: 'база', r: 'поворот' };
     const run = (kind, n, name) => {
       const errs = [];
       let calc = 0;
@@ -484,7 +485,8 @@
     // гнёзда — по прямой от гнезда 1 до гнезда 5 (вылет, база)
     zPlace: 30, zPick: 32,
     tray1X: 200, tray1A: 235, trayNX: 200, trayNA: 295,
-    step: 10, pov: 150, gripTrue: 'open', // gripper_state = true — схват открыт (как в пульте)
+    // gripper_state = true — схват закрыт: проверено на руке 20.10.2026 (в пульте по умолчанию наоборот)
+    step: 10, pov: 150, gripTrue: 'closed', gripV: 2,
     parkX: 160, parkZ: 200, parkAngel: 260,
   };
 
@@ -503,6 +505,9 @@
     if (!saved || typeof saved !== 'object') return { cal: saved, dropped: false };
     const c = Object.assign({}, saved);
     if (OLD_KEYS.some((k) => k in c)) delete c.fix;
+    // до gripV 2 по умолчанию стояло «true — открыт», а на руке наоборот: кнопки схвата были перепутаны.
+    // Точки цепочек хранят «закрыт / открыт», а не gripper_state, поэтому сами цепочки не меняются
+    if (!(+c.gripV >= 2)) { c.gripTrue = 'closed'; c.gripV = 2; }
     OLD_KEYS.forEach((k) => delete c[k]);
     const painted = Array.isArray(c.chains) && c.chains.some((pts) => Array.isArray(pts) && pts.some((p) => p && 'paint_pov' in p));
     if (painted) c.chains = Array(9).fill(null);

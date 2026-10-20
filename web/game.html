@@ -266,6 +266,15 @@
               <button class="btn sm ghost round" data-test="h+" title="Выше на 1 мм — для всех клеток (или всех гнёзд)" aria-label="Высота захвата плюс 1 мм">+1</button>
             </span>
           </div>
+          <div class="row wrap">
+            <span class="hint">Поворот схвата</span>
+            <span class="row tight">
+              <button class="btn sm ghost" data-test="p:-10" title="Повернуть схват на −10° — для всех клеток и гнёзд" aria-label="Поворот схвата минус 10 градусов">−10°</button>
+              <button class="btn sm ghost" data-test="p:-1" title="Повернуть схват на −1° — для всех клеток и гнёзд" aria-label="Поворот схвата минус 1 градус">−1°</button>
+              <button class="btn sm ghost" data-test="p:1" title="Повернуть схват на +1° — для всех клеток и гнёзд" aria-label="Поворот схвата плюс 1 градус">+1°</button>
+              <button class="btn sm ghost" data-test="p:10" title="Повернуть схват на +10° — для всех клеток и гнёзд" aria-label="Поворот схвата плюс 10 градусов">+10°</button>
+            </span>
+          </div>
           <p class="hint">Поправка выбранной клетки или гнезда — к общей калибровке</p>
           <div class="row wrap fix-row">
             <span class="row tight"><span class="hint">вылет</span>
@@ -280,6 +289,10 @@
               <button class="btn sm ghost round" data-fix="a-" title="База −1° — по часовой (Shift — 5)" aria-label="База минус 1 градус">−</button>
               <button class="btn sm ghost round" data-fix="a+" title="База +1° — против часовой (Shift — 5)" aria-label="База плюс 1 градус">+</button>
             </span>
+            <span class="row tight"><span class="hint">поворот</span>
+              <button class="btn sm ghost round" data-fix="r-" title="Поворот схвата −1° только здесь (Shift — 5)" aria-label="Поворот схвата минус 1 градус">−</button>
+              <button class="btn sm ghost round" data-fix="r+" title="Поворот схвата +1° только здесь (Shift — 5)" aria-label="Поворот схвата плюс 1 градус">+</button>
+            </span>
           </div>
           <p class="hint" id="fix-state">без поправки</p>
           <div class="row wrap">
@@ -289,7 +302,7 @@
             <button class="btn sm ghost danger" id="cal-reset" title="Вернуть всю калибровку руки к заводской: сторона, центр поля, лоток, высоты, схват, стоянка, поправки, все цепочки">всю калибровку руки ✕</button>
             <button class="btn sm ghost right" data-test="park">На стоянку</button>
           </div>
-          <p class="hint" id="test-state">Порядок: «Над» — проверить центр клетки или гнезда; «Опустить» — схват на высоте захвата, губки должны охватывать пластину фигурки; затем «Закрыть схват». Высота −1 / +1 меняет высоту захвата сразу для всех клеток (или всех гнёзд); поправка — только для выбранной: вылет и база двигают руку над целью, высота опускает схват.</p>
+          <p class="hint" id="test-state">Порядок: «Над» — проверить центр клетки или гнезда; «Опустить» — схват на высоте захвата, губки должны охватывать пластину фигурки; затем «Закрыть схват». Высота −1 / +1 меняет высоту захвата сразу для всех клеток (или всех гнёзд), поворот схвата — для всех клеток и гнёзд. Поправка — только для выбранной: вылет и база двигают руку над целью, высота опускает схват, поворот поворачивает схват на месте.</p>
         </fieldset>
 
         <fieldset>

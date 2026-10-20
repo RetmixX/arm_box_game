@@ -1040,7 +1040,7 @@
     $$('[data-test], [data-fix]').forEach((b) => { b.disabled = busy; });
     const cal = S.cal[S.edit];
     const t = tSel();
-    const empty = (kind, i) => { const f = TTT.fixOf(cal, kind, i); return !f.x && !f.z && !f.a; };
+    const empty = (kind, i) => { const f = TTT.fixOf(cal, kind, i); return !f.x && !f.z && !f.a && !f.r; };
     $('#fix-reset').disabled = busy || empty(t.kind, t.i);
     $('#fix-reset-all').disabled = Array.from({ length: 9 }, (_, i) => i).every((i) => empty('cell', i)) && Array.from({ length: TTT.SLOTS }, (_, k) => k).every((k) => empty('slot', k));
     const el = $('#test-state');
@@ -1260,6 +1260,13 @@
     return over.concat(TTT.pathPlan(cal, [{ x: hover.x, z: hover.z, angel: hover.angel, pov: hover.pov_gripper, closed }, bottom], 'вниз', { target }).slice(1));
   }
 
+  /** Повернуть схват на месте (у цели) на поворот по расчёту — вылет, высоту и схват не трогаем */
+  function turnStep(cal, side, t) {
+    const l = lastPose(side);
+    const pov = TTT.calcBottom(cal, t.kind, t.i).pov;
+    return TTT.command(cal, { x: l.x, z: l.z, angel: l.angel, pov, closed: l.closed }, 'поворот схвата ' + pov + '°', { target: l.target });
+  }
+
   const hasChain = (side, t) => !!TTT.chainOf(S.cal[side], t.kind, t.i);
   const chainNote = (side, t) => (hasChain(side, t) ? ' У цели записана цепочка — в игре рука идёт по ней, а не по расчёту.' : '');
 
@@ -1279,6 +1286,17 @@
       }
       const b = TTT.calcBottom(cal, t.kind, t.i);
       await runTest(side, downPlan(cal, side, t), tName(t) + ': схват на высоте захвата ' + b.z + ' мм', ' Губки должны охватывать пластину фигурки по середине; если нет — «Высота захвата» −1 / +1.' + chainNote(side, t));
+    } else if (kind.startsWith('p:')) {
+      // общий поворот схвата: у выбранной цели — поворачиваем на месте, иначе — над целью с новым поворотом
+      const next = Math.round(+cal.pov + +kind.slice(2));
+      if (!(next >= TTT.LIMITS.pov_gripper[0] && next <= TTT.LIMITS.pov_gripper[1])) { toast('Поворот схвата — от ' + TTT.LIMITS.pov_gripper.join(' до ') + '°'); return; }
+      const trial = Object.assign({}, cal, { pov: next });
+      const plan = atTarget(side, t) ? [turnStep(trial, side, t)] : overPlan(trial, side, t);
+      const e = plan.map(TTT.checkPose).find(Boolean);
+      if (e) { toast('Так нельзя: ' + e); return; }
+      cal.pov = next;
+      save(); fillForm();
+      await runTest(side, plan, 'поворот схвата ' + next + '°', ' Общий для всех клеток и гнёзд по расчёту и стоянки. Пластина фигурки должна встать между губками.' + chainNote(side, t));
     } else if (kind === 'open' || kind === 'close') {
       if (!l) { toast('Сначала отправьте руку над клеткой или на стоянку — схват меняется на месте'); return; }
       const step = TTT.command(cal, { x: l.x, z: l.z, angel: l.angel, pov: l.pov_gripper, closed: kind === 'close' }, kind === 'close' ? 'схват закрывается' : 'схват открывается', { target: l.target });
@@ -1308,7 +1326,7 @@
 
   /* --------------------- поправка клетки / гнезда: вылет, высота, база --------------------- */
 
-  const FIX_NAMES = { x: 'вылет', z: 'высота', a: 'база' };
+  const FIX_NAMES = { x: 'вылет', z: 'высота', a: 'база', r: 'поворот схвата' };
   const fixKey = (t) => (t.kind === 'cell' ? 'fix' : 'slotFix');
 
   function fixText(cal, t) {
@@ -1318,6 +1336,7 @@
     if (f.x) parts.push('вылет ' + sg(f.x) + ' мм');
     if (f.z) parts.push('высота ' + sg(f.z) + ' мм');
     if (f.a) parts.push('база ' + sg(f.a) + '°');
+    if (f.r) parts.push('поворот ' + sg(f.r) + '°');
     return tName(t)[0].toUpperCase() + tName(t).slice(1) + ': ' + (parts.length ? parts.join(', ') : 'без поправки');
   }
 
@@ -1325,7 +1344,7 @@
     const cal = S.cal[S.edit];
     const t = tSel();
     const b = TTT.calcBottom(cal, t.kind, t.i);
-    $('#fix-state').textContent = fixText(cal, t) + ' · захват: вылет ' + b.x + ', высота ' + b.z + ', база ' + b.angel + '°' + (hasChain(S.edit, t) ? ' · записана цепочка — поправка в игре не действует' : '');
+    $('#fix-state').textContent = fixText(cal, t) + ' · захват: вылет ' + b.x + ', высота ' + b.z + ', база ' + b.angel + '°, поворот ' + b.pov + '°' + (hasChain(S.edit, t) ? ' · записана цепочка — поправка в игре не действует' : '');
     $('#fix-reset').textContent = tName(t);
     $('#h-name').textContent = t.kind === 'cell' ? 'захвата в клетках' : 'захвата в гнёздах';
     renderTestState();
@@ -1341,7 +1360,7 @@
     const cal = S.cal[side];
     for (const k of Object.keys(TTT.FIX_LIMITS)) {
       if (Math.abs(next[k]) > TTT.FIX_LIMITS[k]) {
-        toast('Поправка: ' + FIX_NAMES[k] + ' — не больше ±' + TTT.FIX_LIMITS[k] + (k === 'a' ? '°' : ' мм') + '. Если нужно больше, поправьте ' + (t.kind === 'cell' ? 'центр поля, шаг' : 'гнёзда 1 и ' + TTT.SLOTS) + ' или высоту захвата');
+        toast('Поправка: ' + FIX_NAMES[k] + ' — не больше ±' + TTT.FIX_LIMITS[k] + (k === 'a' || k === 'r' ? '°' : ' мм') + '. Если нужно больше, поправьте ' + (t.kind === 'cell' ? 'центр поля, шаг' : 'гнёзда 1 и ' + TTT.SLOTS) + ' или высоту захвата');
         return;
       }
     }
@@ -1349,7 +1368,8 @@
     const fix = Array.from({ length: n }, (_, i) => TTT.fixOf(cal, t.kind, i));
     fix[t.i] = next;
     const trial = Object.assign({}, cal, { [fixKey(t)]: fix });
-    const plan = key === 'z' || (key === null && isDown(side, t)) ? downPlan(trial, side, t) : overPlan(trial, side, t);
+    const plan = key === 'r' && atTarget(side, t) ? [turnStep(trial, side, t)]
+      : key === 'z' || (key === null && isDown(side, t)) ? downPlan(trial, side, t) : overPlan(trial, side, t);
     for (const q of plan) {
       const e = TTT.checkPose(q);
       if (e) { toast('Так нельзя: ' + e); return; }
@@ -1357,7 +1377,7 @@
     cal[fixKey(t)] = fix;
     save(); renderFix(); renderChecks();
     const last = plan[plan.length - 1];
-    await runTest(side, plan, fixText(cal, t), ' Команда: x ' + last.x + ' мм, z ' + last.z + ' мм, база ' + last.angel + '°.' + chainNote(side, t));
+    await runTest(side, plan, fixText(cal, t), ' Команда: x ' + last.x + ' мм, z ' + last.z + ' мм, база ' + last.angel + '°, поворот ' + last.pov_gripper + '°.' + chainNote(side, t));
   }
 
   $$('[data-fix]').forEach((b) => b.addEventListener('click', (e) => {

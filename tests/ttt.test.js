@@ -62,8 +62,9 @@ test('команды — для /pos/set: целые, gripper_state по нас�
   const p = T.command(cal, { x: 200.4, z: 99.6, angel: 180.2, closed: true }, 'проба');
   assert.deepEqual([p.x, p.z, p.angel, p.pov_gripper], [200, 100, 180, 150], 'pov по умолчанию — из калибровки');
   assert.equal(p.closed, true);
-  assert.equal(p.gripper_state, false, 'по умолчанию true — открыт, как в пульте');
-  assert.equal(T.command({ ...cal, gripTrue: 'closed' }, { x: 200, z: 100, angel: 180, closed: true }, '').gripper_state, true);
+  assert.equal(p.gripper_state, true, 'по умолчанию true — закрыт: так на руке (в пульте наоборот)');
+  assert.equal(T.command(cal, { x: 200, z: 100, angel: 180, closed: false }, '').gripper_state, false);
+  assert.equal(T.command({ ...cal, gripTrue: 'open' }, { x: 200, z: 100, angel: 180, closed: true }, '').gripper_state, false);
   assert.ok(!('paint_pov' in p));
   assert.match(T.checkPose({ ...p, pov_gripper: 0 }), /поворот схвата 0 вне 1–300/);
   assert.match(T.checkPose({ ...p, gripper_state: undefined }), /состояние схвата/);
@@ -222,16 +223,23 @@ test('по расчёту: клетка — центр по полю, гнёзд
 
 test('поправка клетки / гнезда прибавляется к точке захвата, высота проезда не меняется', () => {
   const base = T.defaultCal('X'), cal = T.defaultCal('X');
-  cal.fix[0] = { x: 4, z: -2, a: 3 };
+  cal.fix[0] = { x: 4, z: -2, a: 3, r: -7 };
   cal.slotFix[1] = { x: -5, z: 1, a: 0 };
   const d = (kind, i) => [T.calcBottom(cal, kind, i), T.calcBottom(base, kind, i)];
   let [f, o] = d('cell', 0);
-  assert.deepEqual([f.x - o.x, f.z - o.z, f.angel - o.angel], [4, -2, 3]);
+  assert.deepEqual([f.x - o.x, f.z - o.z, f.angel - o.angel, f.pov - o.pov], [4, -2, 3, -7]);
+  assert.ok(T.calcChain(cal, 'cell', 0).every((q) => q.pov === base.pov - 7), 'поворот схвата — во всём пути клетки');
   [f, o] = d('slot', 1);
-  assert.deepEqual([f.x - o.x, f.z - o.z, f.angel - o.angel], [-5, 1, 0]);
+  assert.deepEqual([f.x - o.x, f.z - o.z, f.angel - o.angel, f.pov - o.pov], [-5, 1, 0, 0]);
+  // общий поворот схвата — для всех клеток и гнёзд по расчёту
+  const turned = { ...base, pov: 170 };
+  assert.equal(T.calcBottom(turned, 'cell', 4).pov, 170);
+  assert.equal(T.calcBottom(turned, 'slot', 3).pov, 170);
+  assert.ok(T.checkCalibration({ ...cal, fix: [{ r: 50 }] }, 'X').list.some((t) => /поправка поворот 50 \(предел ±45\)/.test(t)));
   assert.equal(T.calcChain(cal, 'cell', 0)[0].z, cal.zSafe, 'над клеткой — на высоте проезда');
   assert.deepEqual(T.calcBottom(cal, 'cell', 4), T.calcBottom(base, 'cell', 4), 'другие клетки не тронуты');
-  assert.deepEqual(T.fixOf({ fix: [[3, 4]] }, 'cell', 0), { x: 0, z: 0, a: 0 }, 'чужой формат игнорируется');
+  assert.deepEqual(T.fixOf({ fix: [[3, 4]] }, 'cell', 0), { x: 0, z: 0, a: 0, r: 0 }, 'чужой формат игнорируется');
+  assert.deepEqual(T.fixOf({ fix: [{ x: 2, z: 1, a: 1 }] }, 'cell', 0), { x: 2, z: 1, a: 1, r: 0 }, 'поправка без поворота — поворот 0');
   cal.fix[8] = { x: 0, z: 0, a: 9 };
   assert.ok(T.checkCalibration(cal, 'X').list.some((t) => /Клетка В1: поправка база 9/.test(t)));
   const own = T.defaultCal('X');
@@ -276,8 +284,19 @@ test('у каждой копии калибровки свои массивы ц
   a.slots[0] = [{ x: 1 }];
   a.fix[0].x = 3;
   a.slotFix[0].z = 2;
-  assert.deepEqual([b.fix[0], b.slotFix[0]], [{ x: 0, z: 0, a: 0 }, { x: 0, z: 0, a: 0 }]);
+  assert.deepEqual([b.fix[0], b.slotFix[0]], [{ x: 0, z: 0, a: 0, r: 0 }, { x: 0, z: 0, a: 0, r: 0 }]);
   assert.equal(b.chains[4], null);
   assert.equal(b.slots[0], null);
   assert.equal(T.defaultCal('X').slots.length, T.SLOTS);
+});
+
+test('смысл gripper_state: сохранённое «true — открыт» переводится на «true — закрыт» один раз', () => {
+  const old = { ...T.defaultCal('X'), gripTrue: 'open' };
+  delete old.gripV;
+  const m = T.migrateCal(old).cal;
+  assert.equal(m.gripTrue, 'closed');
+  assert.equal(m.gripV, 2);
+  // после перевода выбор человека не трогаем
+  assert.equal(T.migrateCal({ ...m, gripTrue: 'open' }).cal.gripTrue, 'open');
+  assert.equal(T.defaultCal('O').gripTrue, 'closed');
 });
