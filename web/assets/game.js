@@ -271,6 +271,29 @@
     return Object.assign({}, LAMP_OFF);
   }
 
+  /** Ошибка лампы для человека: адрес и что проверить */
+  function lampErrText(side, e) {
+    const addr = lampAddr(side);
+    if (/нет ответа|нет связи/.test(e.message)) {
+      return 'лампа ' + addr + ' не отвечает — проверьте, что она включена и адрес лампы в «Настройке» верный; если адрес верный, лампа не разрешает запросы с этой страницы (CORS)';
+    }
+    return 'лампа ' + addr + ': ' + e.message;
+  }
+
+  const LAMP_RETRY_MS = 5000;
+
+  /** Лампа не ответила — через LAMP_RETRY_MS пробуем снова, пока не ответит или лампы не выключат */
+  function retryLamp(side) {
+    const a = arms[side];
+    if (a.lampRetry) return;
+    a.lampRetry = setTimeout(() => {
+      a.lampRetry = null;
+      if (!S.lamps || !a.lampErr) return;
+      a.lampKey = '';
+      syncLamps();
+    }, LAMP_RETRY_MS);
+  }
+
   function syncLamps() {
     if (!S.lamps) return;
     SIDES.forEach(async (side) => {
@@ -286,8 +309,9 @@
         a.lampKey = key;
         a.lampErr = '';
       } catch (e) {
-        a.lampKey = key; // не долбим лампу повторно, пока состояние игры не изменится
-        a.lampErr = e.message;
+        a.lampKey = key; // не долбим лампу на каждый кадр — повтор через LAMP_RETRY_MS
+        a.lampErr = lampErrText(side, e);
+        retryLamp(side);
         if (partyOn(side)) game.party.failed = true; // лампа не отвечает — без переливания, сразу итог
       } finally {
         a.lampBusy = false;
@@ -609,10 +633,11 @@
     $('#arm-cards').innerHTML = SIDES.map((side) => {
       const st = armState(side);
       const a = arms[side];
+      const lampBad = S.lamps && a.lampErr ? '<div class="arm-sub bad" title="' + esc(a.lampErr) + '">лампа не отвечает</div>' : '';
       const lamp = ['red', 'yellow', 'green', 'blue'].map((c) => '<i class="' + (a.lamp[c] ? 'on' : '') + '" style="--c:var(--l-' + c + ')"></i>').join('');
       return '<div class="arm"><span class="arm-mark ' + (side === 'X' ? 'x' : '') + '">' + SIGN[side] + '</span>' +
-        '<div><div class="arm-name">Рука ' + role(side) + '</div><div class="arm-sub ' + (st.bad ? 'bad' : '') + '" title="' + esc(a.err) + '">' + esc(st.text) + ' · ' + esc(trayText(side)) + '</div></div>' +
-        '<span class="lamp ' + (a.lampErr ? 'err' : '') + '" title="' + esc(a.lampErr ? 'Лампа ' + lampAddr(side) + ': ' + a.lampErr : 'Лампа ' + (S.demo ? 'демо' : lampAddr(side) || '—')) + '">' + lamp + '</span></div>';
+        '<div><div class="arm-name">Рука ' + role(side) + '</div><div class="arm-sub ' + (st.bad ? 'bad' : '') + '" title="' + esc(a.err) + '">' + esc(st.text) + ' · ' + esc(trayText(side)) + '</div>' + lampBad + '</div>' +
+        '<span class="lamp ' + (a.lampErr ? 'err' : '') + '" title="' + esc(a.lampErr ? a.lampErr : 'Лампа ' + (S.demo ? 'демо' : lampAddr(side) || '—')) + '">' + lamp + '</span></div>';
     }).join('');
     SIDES.forEach((side) => {
       const st = armState(side);
@@ -1115,7 +1140,23 @@
     else {
       try { const st = await c.status(); lines.push(['Камера: ' + (st.running === true ? 'включена' : st.running === false ? 'выключена' : 'отвечает'), true]); } catch (e) { lines.push(['Камера: ' + e.message, false]); }
     }
-    lines.push(['Лампы проверяются при смене хода — цвет виден на карточках рук', true]);
+    // лампе отправляем то, что она и так должна показывать, — цвет не меняется
+    for (const side of SIDES) {
+      const a = arms[side];
+      const addr = lampAddr(side);
+      if (!a.driver || !addr) { lines.push(['Лампа ' + SIGN[side] + ': адрес не задан (по умолчанию — адрес руки, порт 80)', false]); continue; }
+      try {
+        await a.driver.setLamp(lampFor(side));
+        a.lampErr = '';
+        lines.push(['Лампа ' + SIGN[side] + ' ' + addr + ': отвечает' + (S.lamps ? '' : ' (в игре лампы выключены — «Показывают ход»)'), true]);
+      } catch (e) {
+        a.lampErr = lampErrText(side, e);
+        lines.push(['Лампа ' + SIGN[side] + ' ' + a.lampErr.replace(/^лампа /, ''), false]);
+      }
+      a.lampKey = '';
+    }
+    syncLamps();
+    renderArms();
     out.innerHTML = lines.map(([t, ok]) => '<li class="' + (ok ? 'ok' : '') + '">' + (ok ? '✓ ' : '✗ ') + esc(t) + '</li>').join('');
   });
 
