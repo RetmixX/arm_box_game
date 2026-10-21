@@ -1059,6 +1059,7 @@
     });
     $$('#cal-side button').forEach((b) => b.setAttribute('aria-checked', String(+b.dataset.v === +cal.side)));
     $$('#grip-true button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.v === cal.gripTrue)));
+    $$('#pov-follow button').forEach((b) => b.setAttribute('aria-checked', String(+b.dataset.v === Math.sign(+cal.povFollow || 0))));
     $('#cal-reset').textContent = 'всю калибровку руки ' + SIGN[S.edit];
     renderFix();
     renderSpeed();
@@ -1143,6 +1144,13 @@
     if (!b || busyNow()) return;
     S.cal[S.edit].gripTrue = b.dataset.v;
     arms[S.edit].last = null; // прежние команды записаны со старым смыслом gripper_state
+    save(); fillForm();
+  });
+  // рука не двигается: новый поворот уйдёт со следующей командой к клетке
+  $('#pov-follow').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-v]');
+    if (!b || busyNow()) return;
+    S.cal[S.edit].povFollow = +b.dataset.v;
     save(); fillForm();
   });
   $$('[data-k]').forEach((el) => {
@@ -1344,7 +1352,8 @@
     const cal = S.cal[S.edit];
     const t = tSel();
     const b = TTT.calcBottom(cal, t.kind, t.i);
-    $('#fix-state').textContent = fixText(cal, t) + ' · захват: вылет ' + b.x + ', высота ' + b.z + ', база ' + b.angel + '°, поворот ' + b.pov + '°' + (hasChain(S.edit, t) ? ' · записана цепочка — поправка в игре не действует' : '');
+    const auto = t.kind === 'cell' ? Math.round(TTT.povAuto(cal, b.angel)) : 0;
+    $('#fix-state').textContent = fixText(cal, t) + ' · захват: вылет ' + b.x + ', высота ' + b.z + ', база ' + b.angel + '°, поворот ' + b.pov + '°' + (auto ? ' (за базой ' + (auto > 0 ? '+' : '−') + Math.abs(auto) + '°)' : '') + (hasChain(S.edit, t) ? ' · записана цепочка — поправка в игре не действует' : '');
     $('#fix-reset').textContent = tName(t);
     $('#h-name').textContent = t.kind === 'cell' ? 'захвата в клетках' : 'захвата в гнёздах';
     renderTestState();
@@ -1388,10 +1397,10 @@
     f[key] += (b.dataset.fix[1] === '+' ? 1 : -1) * m;
     setFix(t, f, key);
   }));
-  $('#fix-reset').addEventListener('click', () => setFix(tSel(), { x: 0, z: 0, a: 0 }, null));
+  $('#fix-reset').addEventListener('click', () => setFix(tSel(), { x: 0, z: 0, a: 0, r: 0 }, null));
   $('#fix-reset-all').addEventListener('click', async () => {
     const side = S.edit;
-    if (!(await ask('Обнулить поправки руки ' + SIGN[side] + '?', 'Вылет, высота и база всех клеток и гнёзд станут 0. Остальная калибровка и цепочки останутся. Рука не двигается.', 'Обнулить'))) return;
+    if (!(await ask('Обнулить поправки руки ' + SIGN[side] + '?', 'Вылет, высота, база и поворот схвата всех клеток и гнёзд станут 0. Остальная калибровка и цепочки останутся. Рука не двигается.', 'Обнулить'))) return;
     const d = TTT.defaultCal(side);
     S.cal[side].fix = d.fix;
     S.cal[side].slotFix = d.slotFix;

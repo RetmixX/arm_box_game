@@ -206,7 +206,8 @@
   /*
    * Нет записанной цепочки — рука берёт и ставит по расчёту. Клетка — центр по геометрии поля,
    * гнездо k — на прямой от гнезда 1 до гнезда 5 (их вылет и база — в калибровке). Высота захвата
-   * общая: для клеток zPlace, для гнёзд zPick; поворот схвата общий — pov. Поправка fix[i] / slotFix[k] =
+   * общая: для клеток zPlace, для гнёзд zPick; поворот схвата общий — pov (в клетках — с доворотом
+   * за базой, см. povAuto). Поправка fix[i] / slotFix[k] =
    * { x — вылет, мм; z — высота захвата, мм; a — база, °; r — поворот схвата, ° } прибавляется к точке
    * захвата; высота проезда не меняется.
    * Дальше путь тот же, что у черновика: над точкой → по прямой вниз → схват → по прямой вверх.
@@ -230,6 +231,22 @@
     return armToPolar(a.u + (b.u - a.u) * f, a.v + (b.v - a.v) * f);
   }
 
+  /*
+   * Поворот за базой (cal.povFollow): схват смотрит вниз, поэтому при повороте базы на Δ° фигурка
+   * в схвате поворачивается над полем тоже на Δ°. Чтобы в каждой клетке она вставала ровно, как в
+   * центральной (Б2), схват доворачивается на povFollow × Δ, Δ — угол базы относительно клетки Б2.
+   * povFollow: 0 — выключено, 1 или −1 — в какую сторону крутится мотор схвата (проверяется на руке).
+   * Гнёзда не доворачиваются: плитки стоят пластиной поперёк руки, к каждой схват подходит одинаково.
+   */
+  function povAuto(cal, angel) {
+    const dir = Math.sign(+cal.povFollow || 0);
+    if (!dir) return 0;
+    const c = boardToArm(0, 0, cal);
+    const ref = armToPolar(c.u, c.v).angel;
+    const d = ((((+angel - ref) % 360) + 540) % 360) - 180;
+    return dir * d;
+  }
+
   /** Точка захвата по расчёту { x, z, angel, pov } — с поправкой клетки / гнезда */
   function calcBottom(cal, kind, i) {
     let p, z;
@@ -243,7 +260,9 @@
       z = +cal.zPick;
     }
     const f = fixOf(cal, kind, i);
-    return { x: Math.round(p.x + f.x), z: Math.round(z + f.z), angel: Math.round(p.angel + f.a), pov: Math.round(+cal.pov + f.r) };
+    const angel = Math.round(p.angel + f.a);
+    const auto = kind === 'cell' ? povAuto(cal, angel) : 0;
+    return { x: Math.round(p.x + f.x), z: Math.round(z + f.z), angel, pov: Math.round(+cal.pov + auto + f.r) };
   }
 
   const calcChain = (cal, kind, i) => draftChain(cal, kind, calcBottom(cal, kind, i));
@@ -487,6 +506,7 @@
     tray1X: 200, tray1A: 235, trayNX: 200, trayNA: 295,
     // gripper_state = true — схват закрыт: проверено на руке 20.10.2026 (в пульте по умолчанию наоборот)
     step: 10, pov: 150, gripTrue: 'closed', gripV: 2,
+    povFollow: 0, // поворот схвата за базой в клетках: 0 — выкл, 1 / −1 — направление мотора схвата
     parkX: 160, parkZ: 200, parkAngel: 260,
   };
 
@@ -527,7 +547,7 @@
     LINES, other, result, free, turnOf, minimax, bestMoves, winningMove, chooseMove, LEVELS,
     cellBoard, boardToArm, armToBoard, armToPolar, polarToArm, cellName, slotName,
     SLOTS, NEED_SLOTS, LIMITS, gripState, command, park, over, overCell, targetOf,
-    FIX_LIMITS, fixOf, slotCenter, calcBottom, calcChain, pointsOf, pathPlan, chainOf, chainPlan, reversePoints, movePlan, returnPlan, checkChain, draftChain, chainBottom,
+    FIX_LIMITS, fixOf, slotCenter, povAuto, calcBottom, calcChain, pointsOf, pathPlan, chainOf, chainPlan, reversePoints, movePlan, returnPlan, checkChain, draftChain, chainBottom,
     checkPose, checkCalibration, emptyTray, normalizeTray, nextSlot, boardFromTray,
     DEFAULT_CAL, DEFAULT_SIDE, defaultCal, migrateCal,
   };

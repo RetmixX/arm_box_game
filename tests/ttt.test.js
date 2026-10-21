@@ -300,3 +300,27 @@ test('смысл gripper_state: сохранённое «true — открыт»
   assert.equal(T.migrateCal({ ...m, gripTrue: 'open' }).cal.gripTrue, 'open');
   assert.equal(T.defaultCal('O').gripTrue, 'closed');
 });
+
+test('поворот за базой: в клетке схват доворачивается на угол базы относительно Б2, гнёзда — нет', () => {
+  const off = T.defaultCal('X');
+  assert.equal(off.povFollow, 0, 'по умолчанию выключено');
+  for (const dir of [1, -1]) {
+    const cal = { ...T.defaultCal('X'), povFollow: dir };
+    assert.equal(T.calcBottom(cal, 'cell', 4).pov, cal.pov, 'в Б2 — общий поворот');
+    for (let i = 0; i < 9; i++) {
+      const b = T.calcBottom(cal, 'cell', i), c = T.calcBottom(T.defaultCal('X'), 'cell', 4);
+      assert.ok(Math.abs(b.pov - (cal.pov + dir * (b.angel - c.angel))) <= 1, 'клетка ' + i);
+    }
+    assert.notEqual(T.calcBottom(cal, 'cell', 0).pov, cal.pov, 'в углу доворот есть');
+    for (let k = 0; k < T.SLOTS; k++) assert.equal(T.calcBottom(cal, 'slot', k).pov, cal.pov, 'гнездо ' + k);
+    assert.ok(T.calcChain(cal, 'cell', 0).every((q) => q.pov === T.calcBottom(cal, 'cell', 0).pov), 'доворот — во всём пути клетки');
+  }
+  // доворот считается от фактического угла базы — с поправкой a; поправка r прибавляется сверху
+  const cal = { ...T.defaultCal('X'), povFollow: 1 };
+  cal.fix[0] = { x: 0, z: 0, a: 3, r: 2 };
+  const plain = { ...T.defaultCal('X'), povFollow: 1 };
+  assert.equal(T.calcBottom(cal, 'cell', 0).pov - T.calcBottom(plain, 'cell', 0).pov, 5);
+  // переход через 0°/360° не даёт скачка на 360°
+  assert.equal(T.povAuto({ ...plain, cu: 200, cv: 0, side: 0 }, 181), 1);
+  assert.ok(Math.abs(T.povAuto({ ...plain, cu: -200, cv: 1, side: 0 }, 359)) < 5);
+});
