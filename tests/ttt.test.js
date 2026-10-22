@@ -331,23 +331,27 @@ test('поворот за базой: в клетке схват доворач�
 });
 
 test('новая фигурка: высота захвата и нижние точки цепочек сдвигаются один раз, точки проезда остаются', () => {
-  assert.equal(T.pieceShift(undefined), 1, 'пластина → текущая: +4 − 3');
-  assert.equal(T.pieceShift(2), -3, 'знак стоя 34 мм → 28 мм');
+  assert.equal(T.pieceShift(undefined), 4, 'пластина → текущая: +4 − 3 + 3');
+  assert.equal(T.pieceShift(2), 0, 'знак 34 мм → 28 → снова 34');
+  assert.equal(T.pieceShift(3), 3, 'знак 28 мм → 34');
   assert.equal(T.pieceShift(T.PIECE_V), 0);
-  const old = { zPlace: 34, zPick: 37, zSafe: 150, pieceV: 2, slots: [[{ x: 200, z: 150, angel: 235, closed: false }, { x: 200, z: 40, angel: 235, closed: false, line: true }], null], chains: Array(9).fill(null) };
+  const old = { zPlace: 28, zPick: 31, zSafe: 150, pieceV: 3, slots: [[{ x: 200, z: 150, angel: 235, closed: false }, { x: 200, z: 40, angel: 235, closed: false, line: true }], null], chains: Array(9).fill(null) };
   const m = T.migrateCal(old);
-  assert.equal(m.shift, -3);
+  assert.equal(m.shift, 3);
   assert.deepEqual([m.cal.zPlace, m.cal.zPick, m.cal.zSafe, m.cal.pieceV], [31, 34, 150, T.PIECE_V]);
-  assert.deepEqual(m.cal.slots[0].map((p) => p.z), [150, 37]);
+  assert.deepEqual(m.cal.slots[0].map((p) => p.z), [150, 43]);
   assert.equal(m.cal.slots[0][1].line, true);
   assert.equal(old.slots[0][1].z, 40, 'сохранённый объект не меняется');
   const again = T.migrateCal(m.cal);
   assert.equal(again.shift, 0);
   assert.equal(again.cal.zPick, 34);
   // калибровка времён пластины — сразу на сумму сдвигов
-  assert.deepEqual([T.migrateCal({ zPlace: 30, zPick: 32 }).cal.zPick, T.migrateCal({ zPlace: 30, zPick: 32 }).shift], [33, 1]);
+  assert.deepEqual([T.migrateCal({ zPlace: 30, zPick: 32 }).cal.zPick, T.migrateCal({ zPlace: 30, zPick: 32 }).shift], [36, 4]);
+  // версия 2 → 4: сдвиги −3 и +3 гасятся — калибровка не меняется
+  const v2 = T.migrateCal({ zPlace: 34, zPick: 36, pieceV: 2 });
+  assert.deepEqual([v2.cal.zPick, v2.shift, v2.cal.pieceV], [36, 0, T.PIECE_V]);
   // новая калибровка уже под текущую фигурку
   const fresh = T.migrateCal(JSON.parse(JSON.stringify(T.defaultCal('X'))));
   assert.equal(fresh.shift, 0);
-  assert.deepEqual([fresh.cal.zPlace, fresh.cal.zPick], [31, 33]);
+  assert.deepEqual([fresh.cal.zPlace, fresh.cal.zPick], [34, 36]);
 });
