@@ -112,12 +112,20 @@ test('ход: взять из гнезда → поставить в клетк�
   assert.deepEqual(again.filter((p) => 'trayTo' in p).map((p) => p.trayTo), [4]);
 });
 
-test('по прямой: вертикальный спуск дробится с шагом step, схват по дороге не меняется', () => {
+test('по прямой: вертикальный спуск — одной командой, у самой базы дробится с шагом step', () => {
   const cal = armWithChains();
-  const down = T.chainPlan(cal, 'slot', 0).filter((p) => /по прямой к точке 2/.test(p.label));
-  assert.equal(down.length, Math.ceil((150 - 40) / cal.step) - 1);
+  assert.equal(T.chainPlan(cal, 'slot', 0).filter((p) => /по прямой/.test(p.label)).length, 0, 'спуск и подъём без остановок');
+  const near = T.defaultCal('X');
+  near.slots[0] = [
+    { x: 125, z: 150, angel: 120, closed: false },
+    { x: 125, z: 40, angel: 120, closed: false, line: true },
+    { x: 125, z: 40, angel: 120, closed: true },
+    { x: 125, z: 150, angel: 120, closed: true },
+  ];
+  const down = T.chainPlan(near, 'slot', 0).filter((p) => /по прямой к точке 2/.test(p.label));
+  assert.equal(down.length, Math.ceil((150 - 40) / near.step) - 1);
   for (const p of down) {
-    assert.deepEqual([p.x, p.angel, p.closed], [230, 120, false]);
+    assert.deepEqual([p.x, p.angel, p.closed], [125, 120, false]);
     assert.ok(p.z > 40 && p.z < 150);
   }
   // наклонная прямая — в плоскости стола точки на отрезке
@@ -144,12 +152,9 @@ test('уборка — те же цепочки задом наперёд: за�
   for (const p of back) assert.equal(T.checkPose(p), null, p.label);
   const marks = back.filter((p) => 'trayTo' in p);
   assert.deepEqual(marks.map((p) => [p.trayTo, p.closed, p.z]), [['hand', true, 45], [null, false, 40]]);
-  // клетка задом наперёд: пустой сверху → вниз по прямой → закрыть → вверх по прямой
+  // клетка задом наперёд: пустой сверху → вниз (вертикаль — одной командой) → закрыть → вверх
   const fromCell = back.filter((p) => p.stage === 'pick');
-  assert.equal(fromCell[0].closed, false);
-  assert.equal(fromCell[0].z, 150);
-  assert.equal(fromCell[fromCell.length - 1].closed, true);
-  assert.ok(fromCell.some((p) => /по прямой/.test(p.label)), 'спуск к фигурке — по прямой, как при установке');
+  assert.deepEqual(fromCell.map((p) => [p.z, p.closed]), [[150, false], [45, false], [45, true], [150, true]]);
   // флаг «по прямой» переезжает на соседнюю точку
   const pts = cal.chains[4];
   assert.deepEqual(T.reversePoints(pts).map((q) => q.line), [false, true, false, true]);

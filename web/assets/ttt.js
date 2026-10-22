@@ -188,7 +188,11 @@
    *   гнездо k (cal.slots[k]):  над гнездом, схват открыт → спуск → схват закрывается → подъём с фигуркой
    *   клетка i (cal.chains[i]): над клеткой с фигуркой → спуск → схват открывается → подъём
    * line — идти к точке по прямой от предыдущей (отрезок дробится с шагом step мм: рука двигается
-   * по суставам, одной командой вышла бы дуга). Обратный проход той же цепочки — обратное действие:
+   * по суставам, одной командой вышла бы дуга). Исключение — вертикальный спуск / подъём (VERTICAL):
+   * он идёт одной командой, иначе рука встаёт каждые step мм и едет рывками; дуга при этом отходит
+   * от вертикали наружу, от базы, на 10–15 мм и ниже нижней точки не опускается. У самой базы
+   * (вылет < VERTICAL.minX) дробим как раньше: дуга могла бы зайти за x = 120.
+   * Обратный проход той же цепочки — обратное действие:
    * клетка задом наперёд забирает фигурку, гнездо задом наперёд возвращает её в лоток.
    */
   const KINDS = { cell: 'chains', slot: 'slots' };
@@ -278,6 +282,9 @@
 
   const povOf = (cal, p) => (p.pov !== undefined && p.pov !== null ? +p.pov : +cal.pov);
 
+  /** Вертикальный отрезок: по столу сдвиг не больше dxy мм (угол базы квантуется по 1° ≈ 3,5 мм) */
+  const VERTICAL = { dxy: 5, minX: 135 };
+
   function expand(cal, pts, name, extra) {
     const step = clamp(+cal.step || 10, 1, 50);
     const out = [];
@@ -287,7 +294,8 @@
         const a = polarToArm(+prev.x, +prev.angel), b = polarToArm(+p.x, +p.angel);
         const dz = +p.z - +prev.z;
         const pa = povOf(cal, prev), pb = povOf(cal, p);
-        const n = Math.max(1, Math.ceil(Math.hypot(b.u - a.u, b.v - a.v, dz) / step));
+        const vertical = Math.hypot(b.u - a.u, b.v - a.v) <= VERTICAL.dxy && Math.min(+prev.x, +p.x) >= VERTICAL.minX;
+        const n = vertical ? 1 : Math.max(1, Math.ceil(Math.hypot(b.u - a.u, b.v - a.v, dz) / step));
         for (let j = 1; j < n; j++) {
           const f = j / n;
           const q = armToPolar(a.u + (b.u - a.u) * f, a.v + (b.v - a.v) * f);
