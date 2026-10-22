@@ -39,17 +39,17 @@
   });
 
   const droppedFor = []; // руки, у которых удалены цепочки рисования маркером
-  const raisedFor = []; // руки, у которых высота захвата поднята под фигурку «знак стоя»
+  const shiftedFor = []; // [рука, сдвиг мм] — высота захвата сдвинута под новую фигурку
   function loadCal(side, saved) {
     const m = TTT.migrateCal(saved);
     if (m.dropped) droppedFor.push(side);
-    if (m.raised) raisedFor.push(side);
+    if (m.shift) shiftedFor.push([side, m.shift]);
     const cal = Object.assign(TTT.defaultCal(side), m.cal);
     if (!Array.isArray(cal.slots)) cal.slots = TTT.defaultCal(side).slots;
     return cal;
   }
-  const raisedNote = () => 'Новые фигурки (знак стоя): высота захвата руки ' + raisedFor.map((s) => SIGN[s]).join(' и ')
-    + ' поднята на ' + TTT.PIECE_DZ + ' мм вместе с записанными цепочками. Проверьте захват кнопкой «▶ Проиграть» на вкладке «Позиции»';
+  const shiftNote = () => 'Новые фигурки: высота захвата ' + shiftedFor.map(([s, dz]) => 'руки ' + SIGN[s] + ' ' + (dz > 0 ? 'поднята' : 'опущена') + ' на ' + Math.abs(dz) + ' мм').join(', ')
+    + ' — вместе с нижними точками записанных цепочек. Проверьте захват кнопкой «▶ Проиграть» на вкладке «Позиции»';
 
   function loadSettings() {
     const d = DEFAULTS();
@@ -1794,13 +1794,13 @@
       if (typeof d.lamps === 'boolean') S.lamps = d.lamps;
       if (Number.isInteger(d.speed) && d.speed >= 1 && d.speed <= 100) S.speed = d.speed;
       droppedFor.length = 0;
-      raisedFor.length = 0;
+      shiftedFor.length = 0;
       SIDES.forEach((side) => { if (d.cal && d.cal[side]) S.cal[side] = loadCal(side, d.cal[side]); });
       Object.assign(ch, { kind: null, i: null, pose: null, sel: -1 });
       save(); fillForm(); startArms(); refreshCam();
       if (S.page === 'teach') { renderChain(); renderTeach(); }
       toast(droppedFor.length ? 'Настройки загружены. Цепочки рисования маркером удалены — запишите цепочки фигурок на вкладке «Позиции»'
-        : raisedFor.length ? 'Настройки загружены. ' + raisedNote() : 'Настройки загружены');
+        : shiftedFor.length ? 'Настройки загружены. ' + shiftNote() : 'Настройки загружены');
     } catch (err) {
       toast('Не удалось загрузить: ' + err.message);
     }
@@ -1850,9 +1850,9 @@
   if (droppedFor.length) {
     save();
     toast('Игра теперь ставит фигурки: цепочки рисования маркером руки ' + droppedFor.map((s) => SIGN[s]).join(' и ') + ' удалены. Запишите цепочки клеток и гнёзд на вкладке «Позиции»');
-  } else if (raisedFor.length) {
+  } else if (shiftedFor.length) {
     save();
-    toast(raisedNote());
+    toast(shiftNote());
   }
   if (game.board.some(Boolean)) toast('На поле фигурки с прошлого раза — партия продолжается');
 })();

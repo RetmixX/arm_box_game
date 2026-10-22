@@ -509,8 +509,8 @@
     side: 0, turn: 0, cu: 200, cv: 0, pitch: 50,
     zSafe: 150, // высота проезда: цепочки начинаются и кончаются не ниже, переезды — на ней
     // по расчёту: z схвата при захвате фигурки в клетке и в гнезде (гнездо выше на толщину дна);
-    // гнёзда — по прямой от гнезда 1 до гнезда 5 (вылет, база). Под фигурку «знак стоя» (pieceV 2)
-    zPlace: 34, zPick: 36, pieceV: 2,
+    // гнёзда — по прямой от гнезда 1 до гнезда 5 (вылет, база). Под фигурку версии pieceV (см. PIECE_SHIFTS)
+    zPlace: 31, zPick: 33, pieceV: 3,
     tray1X: 200, tray1A: 235, trayNX: 200, trayNA: 295,
     // gripper_state = true — схват закрыт: проверено на руке 20.10.2026 (в пульте по умолчанию наоборот)
     step: 10, pov: 150, gripTrue: 'closed', gripV: 2,
@@ -525,20 +525,32 @@
   const OLD_KEYS = ['zDraw', 'liftTravel', 'liftApproach', 'zTilt', 'size', 'paintPov', 'markerA', 'markerB', 'paintMid', 'paintFrom', 'paintTo', 'zTravel', 'zApproach'];
 
   /**
-   * Фигурка «знак стоя» (pieceV 2, 22.10.2026) вместо пластины: середина зоны захвата выше на PIECE_DZ мм —
-   * у пластины 14 мм от низа фигурки, у перекрестья ✕ и центра ○ — 18. Выше перекрестья перекладины ✕
-   * расходятся за ширину губок, поэтому поднимаем ровно на сдвиг середины, а не на рост фигурки (+10).
+   * Версии фигурки (models/pieces.py) и сдвиг середины зоны захвата, мм, относительно предыдущей:
+   *   2 — «знак стоя» вместо пластины (22.10.2026): середина у пластины была на 14 мм от низа фигурки,
+   *       у перекрестья ✕ и центра ○ — на 18. На весь рост (+10) поднимать нельзя: выше перекрестья
+   *       перекладины ✕ расходятся за ширину губок;
+   *   3 — знак меньше (22.10.2026, печать дольше часа): знак 34 → 28 мм, основание 3 → 2 мм — середина 18 → 15.
    */
-  const PIECE_DZ = 4;
+  const PIECE_SHIFTS = { 2: 4, 3: -3 };
+  const PIECE_V = 3;
+
+  /** Сдвиг высоты захвата, мм, для калибровки, записанной под фигурку версии v (нет версии — пластина, 1) */
+  function pieceShift(v) {
+    const from = +v >= 1 ? +v : 1;
+    let dz = 0;
+    for (let k = from + 1; k <= PIECE_V; k++) dz += PIECE_SHIFTS[k] || 0;
+    return dz;
+  }
 
   /**
-   * Сохранённая калибровка → текущая. Возвращает { cal, dropped, raised }.
+   * Сохранённая калибровка → текущая. Возвращает { cal, dropped, shift }.
    * Рисование маркером → фигурки: геометрия поля и стоянка остаются; цепочки рисования (точки с paint_pov)
    * и поправки клеток (подбирались под кончик маркера, смещённый от оси) к схвату не подходят — удаляются.
-   * Пластина → знак стоя: высоты захвата и все точки записанных цепочек поднимаются на PIECE_DZ.
+   * Новая фигурка (pieceV): высоты захвата и точки записанных цепочек ниже высоты проезда сдвигаются на
+   * pieceShift — точки проезда остаются, иначе цепочка опустилась бы ниже zSafe. shift — сдвиг, мм (0 — не было).
    */
   function migrateCal(saved) {
-    if (!saved || typeof saved !== 'object') return { cal: saved, dropped: false, raised: false };
+    if (!saved || typeof saved !== 'object') return { cal: saved, dropped: false, shift: 0 };
     const c = Object.assign({}, saved);
     if (OLD_KEYS.some((k) => k in c)) delete c.fix;
     // до gripV 2 по умолчанию стояло «true — открыт», а на руке наоборот: кнопки схвата были перепутаны.
@@ -547,23 +559,25 @@
     OLD_KEYS.forEach((k) => delete c[k]);
     const painted = Array.isArray(c.chains) && c.chains.some((pts) => Array.isArray(pts) && pts.some((p) => p && 'paint_pov' in p));
     if (painted) c.chains = Array(9).fill(null);
-    let raised = false;
-    if (!(+c.pieceV >= 2)) {
+    const dz = pieceShift(c.pieceV);
+    let moved = false;
+    if (dz) {
+      const zSafe = Number.isFinite(+c.zSafe) && c.zSafe !== null && c.zSafe !== '' ? +c.zSafe : DEFAULT_CAL.zSafe;
       ['zPlace', 'zPick'].forEach((k) => {
-        if (Number.isFinite(+c[k]) && c[k] !== null && c[k] !== '') { c[k] = +c[k] + PIECE_DZ; raised = true; }
+        if (Number.isFinite(+c[k]) && c[k] !== null && c[k] !== '') { c[k] = +c[k] + dz; moved = true; }
       });
-      const lift = (list) => (Array.isArray(list) ? list.map((pts) => (Array.isArray(pts) ? pts.map((p) => {
-        if (!p || !Number.isFinite(+p.z)) return p;
-        raised = true;
-        return Object.assign({}, p, { z: +p.z + PIECE_DZ });
+      const shift = (list) => (Array.isArray(list) ? list.map((pts) => (Array.isArray(pts) ? pts.map((p) => {
+        if (!p || !Number.isFinite(+p.z) || +p.z >= zSafe) return p;
+        moved = true;
+        return Object.assign({}, p, { z: +p.z + dz });
       }) : pts)) : list);
-      c.chains = lift(c.chains);
-      c.slots = lift(c.slots);
+      c.chains = shift(c.chains);
+      c.slots = shift(c.slots);
       if (!Array.isArray(c.chains)) delete c.chains;
       if (!Array.isArray(c.slots)) delete c.slots;
-      c.pieceV = 2;
     }
-    return { cal: c, dropped: painted, raised };
+    c.pieceV = PIECE_V;
+    return { cal: c, dropped: painted, shift: moved ? dz : 0 };
   }
 
   /** Копия калибровки по умолчанию для руки side ('X' | 'O'); цепочки — свои массивы на каждую копию */
@@ -581,7 +595,7 @@
     SLOTS, NEED_SLOTS, LIMITS, gripState, command, park, over, overCell, targetOf,
     FIX_LIMITS, fixOf, slotCenter, povAuto, calcBottom, calcChain, pointsOf, pathPlan, chainOf, chainPlan, reversePoints, movePlan, returnPlan, checkChain, draftChain, chainBottom,
     checkPose, checkCalibration, emptyTray, normalizeTray, nextSlot, boardFromTray,
-    DEFAULT_CAL, DEFAULT_SIDE, defaultCal, migrateCal, PIECE_DZ,
+    DEFAULT_CAL, DEFAULT_SIDE, defaultCal, migrateCal, PIECE_V, pieceShift,
   };
   root.TTT = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

@@ -280,7 +280,7 @@ test('калибровка рисования маркером переноси�
   for (const k of ['zDraw', 'liftTravel', 'markerA', 'paintPov', 'fix']) assert.ok(!(k in m.cal), k + ' (поправки маркера к схвату не подходят)');
   assert.ok(m.cal.chains.every((c) => c === null));
   const fresh = armWithChains();
-  assert.deepEqual(T.migrateCal(fresh), { cal: fresh, dropped: false, raised: false }, 'новый формат не меняется');
+  assert.deepEqual(T.migrateCal(fresh), { cal: fresh, dropped: false, shift: 0 }, 'новый формат не меняется');
 });
 
 test('у каждой копии калибровки свои массивы цепочек', () => {
@@ -330,19 +330,24 @@ test('поворот за базой: в клетке схват доворач�
   assert.ok(Math.abs(T.povAuto({ ...plain, cu: -200, cv: 1, side: 0 }, 359)) < 5);
 });
 
-test('фигурка «знак стоя»: сохранённая высота захвата и цепочки поднимаются один раз', () => {
-  const old = { zPlace: 30, zPick: 33, zSafe: 150, slots: [[{ x: 200, z: 150, angel: 235, closed: false }, { x: 200, z: 40, angel: 235, closed: false, line: true }], null], chains: Array(9).fill(null) };
+test('новая фигурка: высота захвата и нижние точки цепочек сдвигаются один раз, точки проезда остаются', () => {
+  assert.equal(T.pieceShift(undefined), 1, 'пластина → текущая: +4 − 3');
+  assert.equal(T.pieceShift(2), -3, 'знак стоя 34 мм → 28 мм');
+  assert.equal(T.pieceShift(T.PIECE_V), 0);
+  const old = { zPlace: 34, zPick: 37, zSafe: 150, pieceV: 2, slots: [[{ x: 200, z: 150, angel: 235, closed: false }, { x: 200, z: 40, angel: 235, closed: false, line: true }], null], chains: Array(9).fill(null) };
   const m = T.migrateCal(old);
-  assert.equal(m.raised, true);
-  assert.deepEqual([m.cal.zPlace, m.cal.zPick, m.cal.zSafe, m.cal.pieceV], [30 + T.PIECE_DZ, 33 + T.PIECE_DZ, 150, 2]);
-  assert.deepEqual(m.cal.slots[0].map((p) => p.z), [150 + T.PIECE_DZ, 40 + T.PIECE_DZ]);
+  assert.equal(m.shift, -3);
+  assert.deepEqual([m.cal.zPlace, m.cal.zPick, m.cal.zSafe, m.cal.pieceV], [31, 34, 150, T.PIECE_V]);
+  assert.deepEqual(m.cal.slots[0].map((p) => p.z), [150, 37]);
   assert.equal(m.cal.slots[0][1].line, true);
   assert.equal(old.slots[0][1].z, 40, 'сохранённый объект не меняется');
   const again = T.migrateCal(m.cal);
-  assert.equal(again.raised, false);
-  assert.equal(again.cal.zPick, 33 + T.PIECE_DZ);
-  // новая калибровка уже под знак стоя — не поднимается
+  assert.equal(again.shift, 0);
+  assert.equal(again.cal.zPick, 34);
+  // калибровка времён пластины — сразу на сумму сдвигов
+  assert.deepEqual([T.migrateCal({ zPlace: 30, zPick: 32 }).cal.zPick, T.migrateCal({ zPlace: 30, zPick: 32 }).shift], [33, 1]);
+  // новая калибровка уже под текущую фигурку
   const fresh = T.migrateCal(JSON.parse(JSON.stringify(T.defaultCal('X'))));
-  assert.equal(fresh.raised, false);
-  assert.deepEqual([fresh.cal.zPlace, fresh.cal.zPick], [34, 36]);
+  assert.equal(fresh.shift, 0);
+  assert.deepEqual([fresh.cal.zPlace, fresh.cal.zPick], [31, 33]);
 });
