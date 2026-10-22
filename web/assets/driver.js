@@ -84,11 +84,37 @@
       this.state = 'idle';
       this.retry = 0;
       this.disposed = false;
+      this.inFlight = 0; // движений в полёте
+      this.movedAt = 0; // когда закончилось последнее движение
+      this.reading = Promise.resolve(); // последнее чтение телеметрии: движение ждёт его окончания
     }
 
-    getPos() { return request(this.api + '/pos').then(asDict); }
-    getTemp() { return request(this.api + '/temp').then(asDict); }
-    getLoad() { return request(this.api + '/load').then(asDict); }
+    _read(path) {
+      const r = request(this.api + path).then(asDict);
+      this.reading = r.catch(() => {});
+      return r;
+    }
+    getPos() { return this._read('/pos'); }
+    getTemp() { return this._read('/temp'); }
+    getLoad() { return this._read('/load'); }
+
+    /**
+     * Рука едет (или только что доехала и, скорее всего, сейчас получит следующую точку цепочки).
+     * Пока true, опрос телеметрии пропускаем: чтения полудуплексной шины рвут движение — оно идёт рывками.
+     */
+    get moving() { return this.inFlight > 0 || Date.now() - this.movedAt < 400; }
+
+    /** Движение занимает шину целиком: дожидаемся начатого чтения и держим флаг до ответа */
+    async _busy(fn) {
+      this.inFlight++;
+      try {
+        await this.reading;
+        return await fn();
+      } finally {
+        this.inFlight--;
+        this.movedAt = Date.now();
+      }
+    }
 
     /** Скорость, % (1–100). Требует метода /api/motors/speed в backend (см. backend-patch). */
     async getSpeed() {
@@ -112,23 +138,26 @@
       }, 5000);
     }
 
-    async move(raw, via) {
+    move(raw, via) {
       const cmd = normalize(raw);
-      if (via === 'ws' && this.ws && this.ws.readyState === WebSocket.OPEN) return this._moveWs(cmd);
-      await request(this.api + '/pos/set', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', accept: 'application/json' },
-        body: JSON.stringify(cmd),
-      }, this.moveTimeoutMs);
+      return this._busy(async () => {
+        if (via === 'ws' && this.ws && this.ws.readyState === WebSocket.OPEN) return this._moveWs(cmd);
+        await request(this.api + '/pos/set', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+          body: JSON.stringify(cmd),
+        }, this.moveTimeoutMs);
+      });
     }
 
     /** Движение для рисования — только REST: ответ приходит после завершения движения */
-    async movePaint(raw) {
-      await request(this.api + '/pos/set-paint', {
+    movePaint(raw) {
+      const cmd = normalizePaint(raw);
+      return this._busy(() => request(this.api + '/pos/set-paint', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', accept: 'application/json' },
-        body: JSON.stringify(normalizePaint(raw)),
-      }, this.moveTimeoutMs);
+        body: JSON.stringify(cmd),
+      }, this.moveTimeoutMs));
     }
 
     _moveWs(cmd) {

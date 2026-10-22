@@ -264,6 +264,7 @@
 
   let gen = 0;
   let pollTimer = null;
+  const MOVING = new Error('движение'); // опрос прерван началом движения — не ошибка связи
 
   function startDriver() {
     stopDriver();
@@ -289,10 +290,13 @@
 
     const poll = async () => {
       if (my !== gen) return;
+      if (d.moving) { pollTimer = setTimeout(poll, 150); return; } // рука едет — шину не трогаем
       try {
-        // шина полудуплексная — строго последовательно
+        // шина полудуплексная — строго последовательно; движение, начатое посреди опроса, прерывает его
         const pos = await d.getPos();
+        if (d.moving) throw MOVING;
         const temp = await d.getTemp();
+        if (d.moving) throw MOVING;
         const load = await d.getLoad();
         if (my !== gen) return;
         const first = st.link !== 'online';
@@ -306,6 +310,7 @@
         }
       } catch (e) {
         if (my !== gen) return;
+        if (e === MOVING) { pollTimer = setTimeout(poll, 150); return; }
         if (st.link !== 'offline') addLog('error', 'Телеметрия недоступна: ' + e.message);
         st.link = 'offline';
         st.lastError = e.message;

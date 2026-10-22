@@ -111,6 +111,7 @@
     const my = a.gen;
     const poll = async () => {
       if (my !== a.gen) return;
+      if (a.driver.moving) { a.timer = setTimeout(poll, 150); return; } // рука едет — шину не трогаем
       try {
         const pos = await a.driver.getPos();
         if (my !== a.gen) return;

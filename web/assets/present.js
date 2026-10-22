@@ -152,6 +152,7 @@
 
     const poll = async () => {
       if (my !== gen) return;
+      if (d.moving) { pollTimer = setTimeout(poll, 150); return; } // рука едет — шину не трогаем
       try {
         const pos = await d.getPos();
         if (my !== gen) return;
