@@ -22,7 +22,7 @@ npm run serve     # http://localhost:8080 — страницы; без желе�
 | Файл | Что делает |
 | --- | --- |
 | `web/assets/kinematics.js` | Порт `ik.py` (см. `docs/ik.md`): `inverse`, `forward`, `isReachable`, `maxDistance`, `inWorkZone`, `WORK`. Экспорт `window.Kin` и `module.exports` |
-| `web/assets/driver.js` | `RealDriver` (REST + WS), `DemoDriver` (симулятор), `Camera`, `request()` с понятными ошибками. Экспорт `window.Driver` |
+| `web/assets/driver.js` | `RealDriver` (REST + WS), `DemoDriver` (симулятор), `Camera`, `request()` с понятными ошибками. Экспорт `window.Driver`. `CAMERA = false` — камеры пока нет: всё с `data-camera` скрыто на всех страницах, опросов нет; появится — `true` |
 | `web/assets/joystick.js` | Экранные джойстики и Gamepad API (`window.Joy`) |
 | `web/assets/ttt.js` | Чистая логика игры: правила, минимакс, геометрия поле↔рука, цепочки «взять из гнезда → поставить в клетку» (и обратно — уборка), лотки. Экспорт `window.TTT` и `module.exports` |
 | `web/assets/game.js` | UI игры: две руки, общая очередь движений, лотки (`armbox.game` → `tray`), лампы, камера, вкладки «Настройка» и «Позиции» (цепочки точек клеток и гнёзд со схватом в каждой точке) |

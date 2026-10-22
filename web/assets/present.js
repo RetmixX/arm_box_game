@@ -620,7 +620,7 @@
   }
 
   async function refreshCam() {
-    if (cam.busy) return;
+    if (!Driver.CAMERA || cam.busy) return;
     try {
       const s = await camera().status();
       cam.error = '';
@@ -687,8 +687,9 @@
 
   /* ------------------------------ старт ------------------------------ */
 
+  if (!Driver.CAMERA) $$('[data-camera]').forEach((el) => { el.hidden = true; }); // камеры пока нет
   applyTheme(S.theme || (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
   render();
   requestAnimationFrame(frame);
-  detectProxy().then(() => { startDriver(); setPage(S.page === 'camera' ? 'camera' : 'control'); });
+  detectProxy().then(() => { startDriver(); setPage(Driver.CAMERA && S.page === 'camera' ? 'camera' : 'control'); });
 })();

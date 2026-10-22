@@ -108,7 +108,7 @@
     </section>
 
     <aside class="col col-right">
-      <section class="card cam-card" id="cam-card">
+      <section class="card cam-card" id="cam-card" data-camera>
         <div class="card-head">
           <label class="toggle sm">
             <input type="checkbox" id="cam-toggle" role="switch">
@@ -160,7 +160,7 @@
           <div class="dev"><span class="dev-name"><b class="dot">○</b>Лампа</span><div class="addr">
             <input class="input mono" data-d="oLampHost" placeholder="IP руки ○" aria-label="IP лампы ○" autocomplete="off" spellcheck="false"><span class="muted">:</span>
             <input class="input mono" data-d="oLampPort" placeholder="80" inputmode="numeric" aria-label="Порт лампы ○" autocomplete="off"></div></div>
-          <div class="dev"><span class="dev-name"><b class="dot cam">◉</b>Камера</span><div class="addr">
+          <div class="dev" data-camera><span class="dev-name"><b class="dot cam">◉</b>Камера</span><div class="addr">
             <input class="input mono" data-d="camHost" placeholder="192.168.0.105" aria-label="IP камеры" autocomplete="off" spellcheck="false"><span class="muted">:</span>
             <input class="input mono" data-d="camPort" placeholder="8080" inputmode="numeric" aria-label="Порт камеры" autocomplete="off"></div></div>
           <div class="row wrap">

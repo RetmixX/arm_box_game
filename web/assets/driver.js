@@ -331,5 +331,8 @@
     return null;
   }
 
-  window.Driver = { RealDriver, DemoDriver, Camera, cameraRunning, asDict, normalize, normalizePaint, request, lampBody };
+  /** Камеры пока нет: её разметка скрыта ([data-camera]), опросы не идут. Появится — true */
+  const CAMERA = false;
+
+  window.Driver = { RealDriver, DemoDriver, CAMERA, Camera, cameraRunning, asDict, normalize, normalizePaint, request, lampBody };
 })();

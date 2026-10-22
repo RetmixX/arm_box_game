@@ -1482,7 +1482,7 @@
   }
 
   async function refreshCam() {
-    if (cam.busy) return;
+    if (!Driver.CAMERA || cam.busy) return;
     try {
       const s = await camera().status();
       cam.raw = s.raw; cam.running = s.running; cam.error = '';
@@ -1564,8 +1564,9 @@
 
   /* ================================== старт ================================== */
 
+  if (!Driver.CAMERA) $$('[data-camera]').forEach((el) => { el.hidden = true; }); // камеры пока нет
   applyTheme();
-  showTab(S.tab || 'control');
+  showTab(S.tab === 'camera' && !Driver.CAMERA ? 'control' : S.tab || 'control');
   renderControl();
   renderSpeed();
   requestAnimationFrame(frame);

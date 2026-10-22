@@ -14,7 +14,7 @@
       <button data-tab="control" class="on">Управление</button>
       <button data-tab="programs">Программы</button>
       <button data-tab="telemetry">Телеметрия</button>
-      <button data-tab="camera">Камера</button>
+      <button data-tab="camera" data-camera>Камера</button>
       <button data-tab="api">API</button>
       <button data-tab="settings">Настройки</button>
     </nav>
@@ -253,7 +253,7 @@
       </section>
 
       <!-- КАМЕРА -->
-      <section class="pane" data-pane="camera" hidden>
+      <section class="pane" data-pane="camera" data-camera hidden>
         <div class="pane-head">
           <h2>Камера</h2>
           <span id="cam-addr" class="muted small mono"></span>
@@ -302,7 +302,7 @@
   "speed": 30
 }</textarea>
         </div>
-        <div class="api-row">
+        <div class="api-row" data-camera>
           <div class="api-head"><span class="method">GET</span><code>камера /api/status</code><button class="link" data-api="cam-status">Выполнить</button></div>
           <div class="api-head"><span class="method">POST</span><code>камера /api/start</code><button class="link" data-api="cam-start">Выполнить</button></div>
           <div class="api-head"><span class="method">POST</span><code>камера /api/stop</code><button class="link" data-api="cam-stop">Выполнить</button></div>
@@ -355,7 +355,7 @@
           </div>
           <span class="muted small">PUT http://IP/api/lamp · пусто — тот же IP, что у контроллера, порт 80.</span>
         </div>
-        <div class="field">
+        <div class="field" data-camera>
           <label>Камера</label>
           <div class="addr">
             <input id="s-cam-host" class="input mono" placeholder="192.168.0.105" aria-label="IP камеры" autocomplete="off" spellcheck="false">

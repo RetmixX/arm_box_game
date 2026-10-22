@@ -1023,7 +1023,7 @@
     cam.live = false;
   }
   async function refreshCam() {
-    const c = camera();
+    const c = Driver.CAMERA && camera();
     if (!c || cam.busy) { renderCam(); return; }
     try {
       const st = await c.status();
@@ -1141,7 +1141,8 @@
       } catch (e) { lines.push(['Рука ' + SIGN[side] + ' ' + armAddr(side) + ': ' + e.message, false]); }
     }
     const c = camera();
-    if (!c) lines.push(['Камера: адрес не задан', false]);
+    if (!Driver.CAMERA) { /* камеры пока нет — не проверяем */ }
+    else if (!c) lines.push(['Камера: адрес не задан', false]);
     else {
       try { const st = await c.status(); lines.push(['Камера: ' + (st.running === true ? 'включена' : st.running === false ? 'выключена' : 'отвечает'), true]); } catch (e) { lines.push(['Камера: ' + e.message, false]); }
     }
@@ -1841,6 +1842,7 @@
 
   /* ================================ старт ================================ */
 
+  if (!Driver.CAMERA) $$('[data-camera]').forEach((el) => { el.hidden = true; }); // камеры пока нет
   applyTheme();
   startArms();
   setPage(['setup', 'teach'].includes(S.page) ? S.page : 'play');

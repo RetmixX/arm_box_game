@@ -12,7 +12,7 @@
   <header class="bar">
     <div class="brand">ARM<span>·</span>BOX</div>
 
-    <nav class="seg tabs" id="tabs" role="tablist" aria-label="Разделы">
+    <nav class="seg tabs" id="tabs" data-camera role="tablist" aria-label="Разделы">
       <button role="tab" data-page="control" aria-selected="true">Управление</button>
       <button role="tab" data-page="camera" aria-selected="false">Камера</button>
     </nav>
@@ -85,7 +85,7 @@
   </section>
 
   <!-- Вкладка «Камера»: только поток и переключатель -->
-  <section class="campage" id="campage" hidden>
+  <section class="campage" id="campage" data-camera hidden>
     <div class="cam-head">
       <label class="toggle">
         <input type="checkbox" id="cam-toggle" role="switch">
