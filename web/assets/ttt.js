@@ -509,8 +509,8 @@
     side: 0, turn: 0, cu: 200, cv: 0, pitch: 50,
     zSafe: 150, // высота проезда: цепочки начинаются и кончаются не ниже, переезды — на ней
     // по расчёту: z схвата при захвате фигурки в клетке и в гнезде (гнездо выше на толщину дна);
-    // гнёзда — по прямой от гнезда 1 до гнезда 5 (вылет, база)
-    zPlace: 30, zPick: 32,
+    // гнёзда — по прямой от гнезда 1 до гнезда 5 (вылет, база). Под фигурку «знак стоя» (pieceV 2)
+    zPlace: 34, zPick: 36, pieceV: 2,
     tray1X: 200, tray1A: 235, trayNX: 200, trayNA: 295,
     // gripper_state = true — схват закрыт: проверено на руке 20.10.2026 (в пульте по умолчанию наоборот)
     step: 10, pov: 150, gripTrue: 'closed', gripV: 2,
@@ -525,12 +525,20 @@
   const OLD_KEYS = ['zDraw', 'liftTravel', 'liftApproach', 'zTilt', 'size', 'paintPov', 'markerA', 'markerB', 'paintMid', 'paintFrom', 'paintTo', 'zTravel', 'zApproach'];
 
   /**
-   * Калибровка времён рисования маркером → фигурки. Геометрия поля и стоянка остаются;
-   * цепочки рисования (точки с paint_pov) и поправки клеток (подбирались под кончик маркера, смещённый
-   * от оси) к схвату не подходят — удаляются. Возвращает { cal, dropped }.
+   * Фигурка «знак стоя» (pieceV 2, 22.10.2026) вместо пластины: середина зоны захвата выше на PIECE_DZ мм —
+   * у пластины 14 мм от низа фигурки, у перекрестья ✕ и центра ○ — 18. Выше перекрестья перекладины ✕
+   * расходятся за ширину губок, поэтому поднимаем ровно на сдвиг середины, а не на рост фигурки (+10).
+   */
+  const PIECE_DZ = 4;
+
+  /**
+   * Сохранённая калибровка → текущая. Возвращает { cal, dropped, raised }.
+   * Рисование маркером → фигурки: геометрия поля и стоянка остаются; цепочки рисования (точки с paint_pov)
+   * и поправки клеток (подбирались под кончик маркера, смещённый от оси) к схвату не подходят — удаляются.
+   * Пластина → знак стоя: высоты захвата и все точки записанных цепочек поднимаются на PIECE_DZ.
    */
   function migrateCal(saved) {
-    if (!saved || typeof saved !== 'object') return { cal: saved, dropped: false };
+    if (!saved || typeof saved !== 'object') return { cal: saved, dropped: false, raised: false };
     const c = Object.assign({}, saved);
     if (OLD_KEYS.some((k) => k in c)) delete c.fix;
     // до gripV 2 по умолчанию стояло «true — открыт», а на руке наоборот: кнопки схвата были перепутаны.
@@ -539,7 +547,23 @@
     OLD_KEYS.forEach((k) => delete c[k]);
     const painted = Array.isArray(c.chains) && c.chains.some((pts) => Array.isArray(pts) && pts.some((p) => p && 'paint_pov' in p));
     if (painted) c.chains = Array(9).fill(null);
-    return { cal: c, dropped: painted };
+    let raised = false;
+    if (!(+c.pieceV >= 2)) {
+      ['zPlace', 'zPick'].forEach((k) => {
+        if (Number.isFinite(+c[k]) && c[k] !== null && c[k] !== '') { c[k] = +c[k] + PIECE_DZ; raised = true; }
+      });
+      const lift = (list) => (Array.isArray(list) ? list.map((pts) => (Array.isArray(pts) ? pts.map((p) => {
+        if (!p || !Number.isFinite(+p.z)) return p;
+        raised = true;
+        return Object.assign({}, p, { z: +p.z + PIECE_DZ });
+      }) : pts)) : list);
+      c.chains = lift(c.chains);
+      c.slots = lift(c.slots);
+      if (!Array.isArray(c.chains)) delete c.chains;
+      if (!Array.isArray(c.slots)) delete c.slots;
+      c.pieceV = 2;
+    }
+    return { cal: c, dropped: painted, raised };
   }
 
   /** Копия калибровки по умолчанию для руки side ('X' | 'O'); цепочки — свои массивы на каждую копию */
@@ -557,7 +581,7 @@
     SLOTS, NEED_SLOTS, LIMITS, gripState, command, park, over, overCell, targetOf,
     FIX_LIMITS, fixOf, slotCenter, povAuto, calcBottom, calcChain, pointsOf, pathPlan, chainOf, chainPlan, reversePoints, movePlan, returnPlan, checkChain, draftChain, chainBottom,
     checkPose, checkCalibration, emptyTray, normalizeTray, nextSlot, boardFromTray,
-    DEFAULT_CAL, DEFAULT_SIDE, defaultCal, migrateCal,
+    DEFAULT_CAL, DEFAULT_SIDE, defaultCal, migrateCal, PIECE_DZ,
   };
   root.TTT = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
