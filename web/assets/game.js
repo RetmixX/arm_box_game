@@ -520,6 +520,7 @@
   winSvg.setAttribute('viewBox', '0 0 300 300');
   winSvg.setAttribute('preserveAspectRatio', 'none');
   boardEl.appendChild(winSvg);
+  let winShown = ''; // innerHTML браузер пересобирает (<line/> → <line></line>) — сравниваем со своей строкой
 
   function renderBoard() {
     const turn = turnSide();
@@ -556,8 +557,8 @@
       const [a, b] = [ctr(line[0]), ctr(line[2])];
       const dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy), k = 28 / len;
       const html = '<line pathLength="1" x1="' + (a[0] - dx * k) + '" y1="' + (a[1] - dy * k) + '" x2="' + (b[0] + dx * k) + '" y2="' + (b[1] + dy * k) + '"/>';
-      if (winSvg.innerHTML !== html) winSvg.innerHTML = html;
-    } else winSvg.innerHTML = '';
+      if (winShown !== html) { winSvg.innerHTML = html; winShown = html; }
+    } else if (winShown) { winSvg.innerHTML = ''; winShown = ''; }
   }
 
   function renderTurn() {
