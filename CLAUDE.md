@@ -27,8 +27,8 @@ sudo sh scripts/autostart.sh   # Linux: служба systemd armbox-web (server.
 | `web/assets/driver.js` | `RealDriver` (REST + WS), `DemoDriver` (симулятор), `Camera`, `request()` с понятными ошибками. Экспорт `window.Driver`. `CAMERA = false` — камеры пока нет: всё с `data-camera` скрыто на всех страницах, опросов нет; появится — `true` |
 | `web/assets/joystick.js` | Экранные джойстики и Gamepad API (`window.Joy`) |
 | `web/assets/ttt.js` | Чистая логика игры: правила, минимакс, геометрия поле↔рука, цепочки «взять из гнезда → поставить в клетку» (и обратно — уборка), лотки. Экспорт `window.TTT` и `module.exports` |
-| `web/assets/room.js` | Клиент комнаты `scripts/server.py`: долгий опрос, ведущий ПК, снимок, нажатия. Экспорт `window.Room`; без `server.py` — `null`, игра на одном ПК |
-| `scripts/server.py` | Раздаёт `web/` и держит комнату (только stdlib). Общие настройки — `.data/room.json` |
+| `web/assets/room.js` | Клиент комнаты `scripts/server.py`: долгий опрос, ведущий ПК, команда ПК, снимок, нажатия. Экспорт `window.Room`; без `server.py` — `null`, игра на одном ПК |
+| `scripts/server.py` | Раздаёт `web/` и держит комнату (только stdlib): назначает команды (первому ПК ✕, второму ○, третьего не пускает), выбирает ведущего. Общие настройки — `.data/room.json` |
 | `web/assets/game.js` | UI игры: две руки, общая очередь движений, лотки (`armbox.game` → `tray`), лампы, камера, вкладки «Настройка» и «Позиции» (цепочки точек клеток и гнёзд со схватом в каждой точке) |
 | `web/assets/present.css`, `style.css`, `game.css` | Одна палитра «алюминий + сигнальный оранжевый», светлая и тёмная тема |
 
@@ -54,7 +54,7 @@ sudo sh scripts/autostart.sh   # Linux: служба systemd armbox-web (server.
 - Интерфейс, комментарии, сообщения об ошибках — по-русски. Ошибки для человека: что случилось и что сделать («Рука ✕ не отвечает (192.168.0.10:8000)…»).
 - Цвета только через CSS-переменные (`--alu`, `--plate`, `--ink`, `--signal`, …); каждое изменение вёрстки проверять в светлой и тёмной теме и на ширине 390 px.
 - Шрифты: Unbounded — заголовки и цифры, Onest — интерфейс (`assets/fonts.css`, файлы шрифтов лежат на руке в `assets/fonts/`, в репозиторий не попали).
-- `localStorage`: `armbox.settings` — пульт и отладка (и тема для всех страниц), `armbox.programs` — программы, `armbox.game` — игра, `armbox.seat` — за кого играет этот ПК, `armbox.game.local` — свои настройки ПК до подмены общими из комнаты. Чтение и запись всегда в `try/catch`.
+- `localStorage`: `armbox.settings` — пульт и отладка (и тема для всех страниц), `armbox.programs` — программы, `armbox.game` — игра, `armbox.game.local` — свои настройки ПК до подмены общими из комнаты. Чтение и запись всегда в `try/catch`.
 - Названия полей API сохраняем как в backend, включая опечатку `angel` (угол базы).
 
 ## Известные расхождения и задачи

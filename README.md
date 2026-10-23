@@ -9,7 +9,7 @@ python3 scripts/smoke.py   # страницы в браузере, скринш�
 python3 scripts/server.py  # страницы + общая партия для нескольких ПК (на Windows — python)
 ```
 
-Автозапуск на Linux (systemd): `sudo sh scripts/autostart.sh` — служба `armbox-web` (`scripts/server.py`) раздаёт `web/` на порту 8080 и держит общую партию для нескольких ПК: руками командует один ПК, остальные видят игру и ходят за свой знак ([подробнее](docs/game.md#несколько-пк-scriptsserverpy-webassetsroomjs)) при загрузке системы и поднимается снова, если упала. Другой порт — `sudo sh scripts/autostart.sh 8090`, убрать — `sudo sh scripts/autostart.sh --remove`. Служба раздаёт папку на месте: после `git pull` достаточно обновить страницу; переместили папку — поставить заново.
+Автозапуск на Linux (systemd): `sudo sh scripts/autostart.sh` — служба `armbox-web` (`scripts/server.py`) раздаёт `web/` на порту 8080 и держит общую партию для нескольких ПК: первый ПК играет за ✕, второй — за ○, каждый ходит за свою команду ([подробнее](docs/game.md#несколько-пк-scriptsserverpy-webassetsroomjs)) при загрузке системы и поднимается снова, если упала. Другой порт — `sudo sh scripts/autostart.sh 8090`, убрать — `sudo sh scripts/autostart.sh --remove`. Служба раздаёт папку на месте: после `git pull` достаточно обновить страницу; переместили папку — поставить заново.
 
 | Страница | Для чего |
 | --- | --- |

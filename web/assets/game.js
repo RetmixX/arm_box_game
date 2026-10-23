@@ -68,10 +68,9 @@
 
   // Несколько ПК (scripts/server.py, раздел «несколько ПК» ниже). Роль страницы: solo — один ПК, как раньше;
   // leader — этот ПК командует руками и лампами; follower — командует другой ПК, здесь экран и нажатия;
-  // wait — ещё не знаем, руки и лампы не трогаем
-  const SEAT_KEY = 'armbox.seat'; // за кого играет этот ПК — у каждого ПК свой
+  // wait — ещё не знаем, руки и лампы не трогаем. seat — команда ПК, её назначает сервер (null — обе заняты)
   const net = {
-    room: null, role: 'wait', seat: read(SEAT_KEY).seat === 'O' ? 'O' : 'X',
+    room: null, role: 'wait', seat: null, players: null,
     lastSeq: 0, sent: { snap: '', set: '', ack: 0 }, publishing: false, claiming: false, handing: false,
     beat: 0, claimAt: 0, wasLeader: false, offlineSince: 0, handTo: null,
     notice: { n: 0, text: '' }, seen: null, shown: '', remote: null, backedUp: false,
@@ -353,14 +352,15 @@
 
   const robotSide = () => (S.mode === 'pvr' ? TTT.other(S.human) : null);
   const playerOf = (side) => (S.mode === 'pvr' && side !== S.human ? 'robot' : 'human');
-  const nameOf = (side) => (S.mode === 'pvr' ? (side === S.human ? 'Вы' : 'Робот') : 'Игрок ' + SIGN[side]);
+  const duo = () => !!net.room && !!net.seat && S.mode === 'pvp'; // вдвоём на двух ПК: у этого ПК своя команда
+  const nameOf = (side) => (S.mode === 'pvr' ? (side === S.human ? 'Вы' : 'Робот') : duo() ? (side === net.seat ? 'Вы' : 'Соперник') : 'Игрок ' + SIGN[side]);
   const gameBusy = () => !!(game.pending || game.thinking || game.error || game.cleaning);
   const turnSide = () => TTT.turnOf(game.board);
 
-  /** seat — за кого играет ПК, с которого нажали: вдвоём на двух ПК каждый ходит только за свой знак */
+  /** seat — команда ПК, с которого нажали: вдвоём на двух ПК каждый ходит только за свою; ПК без команды не ходит */
   function canClick(i, seat) {
     return !game.board[i] && !game.res && !gameBusy() && !testing && playerOf(turnSide()) === 'human'
-      && (net.role === 'solo' || S.mode !== 'pvp' || seat === turnSide());
+      && (net.role === 'solo' || (!!seat && (S.mode !== 'pvp' || seat === turnSide())));
   }
 
   async function makeMove(cell, side) {
@@ -609,8 +609,9 @@
       title.textContent = 'Робот думает';
       text.textContent = 'Уровень: ' + TTT.LEVELS[S.level].name.toLowerCase();
     } else {
-      title.textContent = S.mode === 'pvr' ? (playerOf(s) === 'human' ? 'Ваш ход' : 'Ход робота') : 'Ход ' + SIGN[s];
-      text.textContent = testing ? 'Рука занята проверкой на вкладке «Настройка» или «Позиции»' : 'Выберите клетку · клавиши 1–9';
+      title.textContent = S.mode === 'pvr' ? (playerOf(s) === 'human' ? 'Ваш ход' : 'Ход робота') : duo() ? (s === net.seat ? 'Ваш ход' : 'Ход соперника') : 'Ход ' + SIGN[s];
+      text.textContent = testing ? 'Рука занята проверкой на вкладке «Настройка» или «Позиции»'
+        : duo() && s !== net.seat ? 'Соперник выбирает клетку на своём ПК' : 'Выберите клетку · клавиши 1–9';
     }
   }
 
@@ -665,7 +666,7 @@
   }
 
   function renderArms() {
-    const role = (side) => (S.mode === 'pvr' ? (side === S.human ? 'ваша' : 'робота') : 'игрока ' + SIGN[side]);
+    const role = (side) => (S.mode === 'pvr' ? (side === S.human ? 'ваша' : 'робота') : duo() ? (side === net.seat ? 'ваша' : 'соперника') : 'игрока ' + SIGN[side]);
     $('#arm-cards').innerHTML = SIDES.map((side) => {
       const st = armState(side);
       const a = arms[side];
@@ -2002,7 +2003,7 @@
   function becomeLeader() {
     const r = net.room;
     const snap = r.snapshot;
-    Object.assign(net, { role: 'leader', wasLeader: true, beat: Date.now(), handTo: null, notice: { n: 0, text: '' }, sent: { snap: '', set: '', ack: 0 } });
+    Object.assign(net, { role: 'leader', wasLeader: true, beat: Date.now(), handTo: null, players: null, notice: { n: 0, text: '' }, sent: { snap: '', set: '', ack: 0 } });
     if (r.settings) { adoptSettings(r.settings); net.sent.set = JSON.stringify(sharedSettings()); }
     // партия — с того места, где её оставил прежний ведущий; фигурки на поле — по лоткам
     const was = snap && (snap.pending || snap.cleaning || snap.active);
@@ -2038,12 +2039,13 @@
   function onRoom(fresh) {
     const r = net.room;
     if (fresh.boot) { net.lastSeq = 0; net.sent = { snap: '', set: '', ack: 0 }; } // сервер перезапущен
+    net.seat = r.seat;
     if (net.handing) return;
     const mine = r.leader === r.id;
     if (mine && net.role !== 'leader' && !r.offline) becomeLeader();
     else if (!mine && net.role === 'leader' && r.leader) stepDown('follower', 'Руками теперь управляет другой ПК');
     else if (!mine && net.role !== 'leader') net.role = r.leader ? 'follower' : 'wait';
-    if (net.role === 'leader') { runIntents(); renderNet(); return; }
+    if (net.role === 'leader') { runIntents(); watchPlayers(); renderNet(); return; }
     if (fresh.settings && r.settings) adoptSettings(r.settings);
     applySnapshot(r.snapshot);
     render();
@@ -2118,7 +2120,7 @@
       if (!net.claiming && now - net.claimAt > BEAT_MS) claim();
       if (net.handTo) handOver(net.handTo);
       if (net.role === 'leader' && !net.handing) publish();
-    } else if (!r.leader && !r.offline && !net.claiming && now - net.claimAt > BEAT_MS) claim(); // ведущего нет — может, мы
+    } else if (!r.leader && !r.offline && net.seat && !net.claiming && now - net.claimAt > BEAT_MS) claim(); // ведущего нет — может, мы
     if (r.offline !== !!net.offlineSince) { net.offlineSince = r.offline ? now : 0; renderNet(); }
   }
 
@@ -2130,28 +2132,37 @@
     $$('[data-net-lock]').forEach((el) => { el.hidden = !locked; });
     $$('[data-net-lockable] > :not([data-net-lock])').forEach((el) => { el.inert = locked; el.classList.toggle('net-locked', locked); });
     if (!r) return;
+    const full = !net.seat && !r.offline; // обе команды заняты — этот ПК не играет
+    $('#net-full').hidden = !full;
+    $$('body > header, body > main').forEach((el) => { el.inert = full; });
     $('#net-role').textContent = net.role === 'leader' ? 'руки — у этого ПК' : r.offline ? 'нет связи' : net.role === 'follower' ? 'руки — у другого ПК' : 'выбираем ведущий ПК…';
-    $('#net-seat-field').hidden = S.mode !== 'pvp';
-    $$('#net-seat button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.v === net.seat)));
-    const others = r.clients.filter((c) => c.id !== r.id);
+    const seat = $('#net-seat');
+    seat.textContent = net.seat ? SIGN[net.seat] : '—';
+    seat.classList.toggle('x', net.seat === 'X');
+    const players = r.clients.filter((c) => c.seat);
     const lines = [];
     if (r.offline) lines.push('Нет связи с сервером на руке — нажатия не отправляются. Связь вернётся — страница подключится сама.');
-    lines.push('ПК в игре: ' + (others.length + 1) + (S.mode === 'pvp' ? ' · за ✕: ' + (r.clients.filter((c) => c.seat === 'X').length || 0) + ', за ○: ' + (r.clients.filter((c) => c.seat === 'O').length || 0) : ''));
-    if (S.mode === 'pvp' && others.some((c) => c.seat === net.seat)) lines.push('Другой ПК тоже играет за ' + SIGN[net.seat] + ' — на одном из них выберите другой знак.');
+    if (!net.seat) { /* окно «обе команды заняты» */ }
+    else if (players.length < 2) lines.push('Второй игрок ещё не подключился — откройте игру на другом ПК, ему достанется ' + SIGN[TTT.other(net.seat)] + '.');
+    else if (S.mode === 'pvp') lines.push('Вы ходите за ' + SIGN[net.seat] + ', соперник — за ' + SIGN[TTT.other(net.seat)] + '. Фигурку ставит рука команды, чей ход.');
+    else lines.push('Оба игрока подключены. Чтобы играть друг против друга, выберите режим «Вдвоём».');
     $('#net-text').textContent = lines.join(' ');
     const take = $('#net-take');
-    take.hidden = net.role === 'leader';
+    take.hidden = net.role === 'leader' || !net.seat;
     take.disabled = r.offline || net.claiming;
   }
 
-  $('#net-seat').addEventListener('click', (e) => {
-    const b = e.target.closest('button[data-v]');
-    if (!b || b.dataset.v === net.seat) return;
-    net.seat = b.dataset.v;
-    write(SEAT_KEY, { seat: net.seat });
-    if (net.room) net.room.seat = net.seat;
-    render();
-  });
+  /** Подключился второй игрок: партия не начата — режим «Вдвоём», каждый за свою команду (выполняет ведущий) */
+  function watchPlayers() {
+    const n = net.room.clients.filter((c) => c.seat).length;
+    const was = net.players;
+    net.players = n;
+    if (n < 2 || (was !== null && was >= 2) || S.mode === 'pvp') return;
+    if (!game.board.some(Boolean) && !gameBusy() && !piecesOut() && !testing) {
+      changeGameSetting('mode', 'pvp', 'none');
+      share('Подключился второй игрок — режим «Вдвоём»: каждый ходит за свою команду');
+    } else if (was !== null) share('Подключился второй игрок — чтобы играть вдвоём, после партии выберите режим «Вдвоём»');
+  }
   $('#net-take').addEventListener('click', () => {
     const r = net.room;
     if (!r || net.role === 'leader') return;
@@ -2161,7 +2172,7 @@
   });
 
   async function netStart() {
-    const r = window.Room ? await Room.connect(net.seat) : null;
+    const r = window.Room ? await Room.connect() : null;
     if (!r) { // страница не с server.py — один ПК, как раньше
       net.role = 'solo';
       startArms();
@@ -2172,7 +2183,7 @@
     r.onChange = onRoom;
     onRoom({ settings: true });
     setInterval(netTick, 250);
-    window.addEventListener('pagehide', () => { if (net.role === 'leader') r.releaseBeacon(); });
+    window.addEventListener('pagehide', () => r.releaseBeacon()); // команда и руки свободны сразу
   }
 
   /* ================================ старт ================================ */

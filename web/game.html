@@ -73,13 +73,7 @@
 
       <section class="card net" id="net-card" hidden>
         <div class="card-head"><h3>Несколько ПК</h3><span class="muted" id="net-role"></span></div>
-        <div class="field" id="net-seat-field">
-          <span class="field-label">Этот ПК играет за</span>
-          <div class="seg wide" id="net-seat" role="radiogroup" aria-label="За кого играет этот ПК">
-            <button data-v="X" role="radio">✕</button>
-            <button data-v="O" role="radio">○</button>
-          </div>
-        </div>
+        <div class="net-seat"><span class="turn-mark" id="net-seat">—</span><span class="field-label">ваша команда — назначена автоматически</span></div>
         <p class="hint" id="net-text"></p>
         <button class="btn ghost sm" id="net-take">Управлять руками отсюда</button>
       </section>
@@ -448,6 +442,12 @@
     </form>
   </dialog>
 
+  <div class="net-full" id="net-full" role="alertdialog" aria-labelledby="net-full-title" hidden>
+    <section class="card">
+      <h2 id="net-full-title">Обе команды заняты</h2>
+      <p class="hint">В игре уже два игрока: ✕ и ○. Страница подключится сама, когда один из них закроет игру.</p>
+    </section>
+  </div>
   <div class="toast" id="toast" role="status" hidden></div>
 
   <script src="assets/kinematics.js"></script>

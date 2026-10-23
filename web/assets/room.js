@@ -10,6 +10,18 @@
   const API = 'api/room'; // относительно страницы
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const newId = () => Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4);
+  const ID_KEY = 'armbox.room.id';
+
+  /** id вкладки: переживает перезагрузку (команда остаётся за ней), у новой вкладки — свой */
+  function tabId() {
+    try {
+      const id = sessionStorage.getItem(ID_KEY) || newId();
+      sessionStorage.setItem(ID_KEY, id);
+      return id;
+    } catch (_) {
+      return newId();
+    }
+  }
 
   async function call(url, opts, ms) {
     const ctl = new AbortController();
@@ -24,9 +36,9 @@
   }
 
   class Room {
-    constructor(seat) {
-      this.id = newId(); // на каждую вкладку свой: две вкладки на одном ПК — тоже два участника
-      this.seat = seat;
+    constructor() {
+      this.id = tabId(); // на каждую вкладку свой: две вкладки на одном ПК — тоже два участника
+      this.seat = null; // команду назначает сервер: 'X', 'O' или null — обе заняты
       this.boot = null;
       this.rev = 0;
       this.srev = null;
@@ -53,6 +65,7 @@
       this.snapshot = v.snapshot;
       this.intents = v.intents || [];
       this.clients = v.clients || [];
+      if (v.you) this.seat = v.you.seat || null;
       this.offline = false;
       this.onChange(fresh);
     }
@@ -88,16 +101,16 @@
     }
     intent(type, data) { return this._post('/intent', Object.assign({}, data, { type })); }
     release(to) { return this._post('/release', { to: to || null }); }
-    /** Закрытие страницы: обычный fetch браузер может оборвать */
+    /** Закрытие страницы: команда свободна, ведущий уходит; обычный fetch браузер может оборвать */
     releaseBeacon() {
-      try { navigator.sendBeacon(API + '/release', JSON.stringify({ id: this.id })); } catch (_) { /* нет sendBeacon */ }
+      try { navigator.sendBeacon(API + '/release', JSON.stringify({ id: this.id, leave: true })); } catch (_) { /* нет sendBeacon */ }
     }
   }
 
   /** Есть ли комната: server.py отвечает сразу (boot пустой), http.server — 404 */
-  async function connect(seat) {
+  async function connect() {
     if (location.protocol !== 'http:' && location.protocol !== 'https:') return null;
-    const room = new Room(seat);
+    const room = new Room();
     try {
       const { status, j } = await call(room._query(0), {}, 2500);
       if (status !== 200 || !j || !j.boot) return null;

@@ -11,15 +11,18 @@
 - settings — общие настройки игры (адреса, калибровка, лотки, счёт). Пишет только ведущий;
   хранятся в файле --data, чтобы пережить перезагрузку руки;
 - snapshot — что показывать на экранах: поле, чей ход, движение, ошибки. Пишет только ведущий;
-- intents — нажатия на других ПК (ход, новая партия, …). Ведущий выполняет их и подтверждает (ack).
+- intents — нажатия на других ПК (ход, новая партия, …). Ведущий выполняет их и подтверждает (ack);
+- команды — каждому ПК сервер сам назначает свою: первому ✕, второму ○ (seat в запросе — только пожелание,
+  например прежняя команда после перезапуска сервера). Обе заняты — ПК без команды: не ходит, не ведущий,
+  страница показывает «обе команды заняты» и займёт команду, когда она освободится.
 
 API, JSON. Каждый ответ — вид комнаты для этого ПК (см. Room.view):
-  GET  /api/room?id=&seat=&since=REV&boot=&srev=  долгий опрос: ответ, когда rev > since (до 20 с)
+  GET  /api/room?id=&seat=&since=REV&boot=&srev=  долгий опрос: ответ, когда rev > since (до 20 с); you.seat — команда ПК
   (в POST ещё boot и srev, как в GET)
   POST /api/room/claim   {id, seat, renew}         стать ведущим, если ведущего нет; renew — продлить своё
   POST /api/room/publish {id, snapshot, settings?, ack}   только ведущий
   POST /api/room/intent  {id, seat, type, ...}     нажатие — ведущему
-  POST /api/room/release {id, to?}                 ведущий уходит; to — передать ПК to
+  POST /api/room/release {id, to?, leave?}         ведущий уходит; to — передать ПК to; leave — страница закрыта, команда свободна
 """
 import argparse
 import json
@@ -36,6 +39,7 @@ POLL_S = 20       # долгий опрос держим не дольше
 CLIENT_S = 30     # ПК пропал из списка, если столько не спрашивал
 INTENT_S = 15     # невыполненное нажатие устаревает
 MAX_BODY = 2 << 20
+SEATS = ('X', 'O')
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -72,14 +76,31 @@ class Room:
         self.rev += 1
         self.cond.notify_all()
 
-    def _touch(self, cid, seat, now):
+    def _active(self, cid, now):
+        c = self.clients.get(cid)
+        return c is not None and (self.polls.get(cid, 0) > 0 or now - c['seen'] < CLIENT_S)
+
+    def _touch(self, cid, want, now):
+        """ПК спросил: запомнить и, если у него нет команды, дать свободную (сначала желаемую)"""
         if not cid:
             return
-        if cid not in self.clients:
+        c = self.clients.get(cid)
+        if c is None:
+            c = self.clients[cid] = {'seat': None, 'seen': now}
             self.rev += 1  # новый ПК — пусть остальные увидят
-        self.clients[cid] = {'seat': seat if seat in ('X', 'O') else None, 'seen': now}
+        c['seen'] = now
+        if c['seat'] is None:
+            taken = {o['seat'] for k, o in self.clients.items() if k != cid and self._active(k, now)}
+            free = [s for s in SEATS if s not in taken]
+            if free:
+                c['seat'] = want if want in free else free[0]
+                self.rev += 1
+                print(f'ПК {cid} играет за {c["seat"]}', flush=True)
         if cid == self.leader:
             self.leader_seen = now
+
+    def seat(self, cid):
+        return self.clients.get(cid, {}).get('seat')
 
     def view(self, cid, boot=None, srev=None):
         now = time.monotonic()
@@ -90,8 +111,9 @@ class Room:
             'srev': self.srev,
             'leader': self.leader if alive else None,
             'snapshot': self.snapshot,
+            'you': {'seat': self.seat(cid)},
             'clients': [{'id': k, 'seat': c['seat'], 'leader': alive and k == self.leader}
-                        for k, c in self.clients.items() if self.polls.get(k, 0) or now - c['seen'] < CLIENT_S],
+                        for k, c in self.clients.items() if self._active(k, now)],
         }
         if boot != self.boot or str(srev) != str(self.srev):
             out['settings'] = self.settings
@@ -107,7 +129,7 @@ class Room:
             with self.cond:
                 now = time.monotonic()
                 alive = self._alive(now)
-                gone = [k for k, c in self.clients.items() if not self.polls.get(k, 0) and now - c['seen'] >= CLIENT_S]
+                gone = [k for k in self.clients if not self._active(k, now)]
                 for k in gone:
                     del self.clients[k]
                 self.intents = [i for i in self.intents if now - i['at'] < INTENT_S]
@@ -130,8 +152,9 @@ class Room:
                         break
                     self.cond.wait(left)
             finally:
-                self.polls[cid] -= 1
-                self._touch(cid, seat, time.monotonic())
+                self.polls[cid] = max(0, self.polls.get(cid, 0) - 1)
+                if cid in self.clients:  # страница ушла (leave) — опрос в полёте команду не возвращает
+                    self._touch(cid, seat, time.monotonic())
             return self.view(cid, boot, srev)
 
     def claim(self, cid, seat, renew, known):
@@ -141,6 +164,8 @@ class Room:
             if self.leader == cid:
                 self.leader_seen = now
                 return True, self.view(cid, *known)
+            if not self.seat(cid):  # ПК без команды (обе заняты) руками не командует
+                return False, self.view(cid, *known)
             # сервер только что запущен: прежний ведущий мог не заметить перезапуска — ждём, пока он продлит
             if self._alive(now) or (not renew and now - self.started < LEASE_S):
                 return False, self.view(cid, *known)
@@ -155,7 +180,7 @@ class Room:
             now = time.monotonic()
             if cid != self.leader or not self._alive(now):
                 return False, self.view(cid, *known)
-            self._touch(cid, self.clients.get(cid, {}).get('seat'), now)
+            self._touch(cid, None, now)
             if 'snapshot' in body:
                 self.snapshot = body['snapshot']
             if body.get('settings') is not None:
@@ -172,21 +197,25 @@ class Room:
         with self.cond:
             now = time.monotonic()
             self._touch(cid, seat, now)
-            if not self._alive(now):
+            if not self._alive(now) or not self.seat(cid):
                 return False, self.view(cid, *known)
             self.seq += 1
-            item = {k: v for k, v in body.items() if k not in ('id', 'seq', 'at', 'from', 'boot', 'srev')}
-            item.update(seq=self.seq, at=now, **{'from': cid})
+            item = {k: v for k, v in body.items() if k not in ('id', 'seq', 'at', 'from', 'seat', 'boot', 'srev')}
+            item.update(seq=self.seq, at=now, seat=self.seat(cid), **{'from': cid})
             self.intents.append(item)
             self._bump()
             return True, self.view(cid, *known)
 
-    def release(self, cid, to, known):
+    def release(self, cid, to, leave, known):
         with self.cond:
             now = time.monotonic()
+            if leave and cid in self.clients:
+                del self.clients[cid]  # страница закрыта — команда свободна сразу
+                self.polls.pop(cid, None)
+                self._bump()
             if cid != self.leader:
-                return False, self.view(cid, *known)
-            self.leader = to if to in self.clients else None
+                return bool(leave), self.view(cid, *known)
+            self.leader = to if to in self.clients and self.seat(to) else None
             self.leader_seen = now
             self.intents = []
             self._bump()
@@ -263,7 +292,7 @@ def handler(room, web):
             elif u.path == '/api/room/intent':
                 ok, v = room.intent(cid, seat, body, known)
             elif u.path == '/api/room/release':
-                ok, v = room.release(cid, body.get('to'), known)
+                ok, v = room.release(cid, body.get('to'), bool(body.get('leave')), known)
             else:
                 return self.send_json(404, {'error': 'Нет такого адреса'})
             self.send_json(200 if ok else 409, dict(v, ok=ok))
