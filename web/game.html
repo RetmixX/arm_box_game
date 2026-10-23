@@ -71,6 +71,19 @@
         <button class="link" id="score-reset">обнулить счёт</button>
       </section>
 
+      <section class="card net" id="net-card" hidden>
+        <div class="card-head"><h3>Несколько ПК</h3><span class="muted" id="net-role"></span></div>
+        <div class="field" id="net-seat-field">
+          <span class="field-label">Этот ПК играет за</span>
+          <div class="seg wide" id="net-seat" role="radiogroup" aria-label="За кого играет этот ПК">
+            <button data-v="X" role="radio">✕</button>
+            <button data-v="O" role="radio">○</button>
+          </div>
+        </div>
+        <p class="hint" id="net-text"></p>
+        <button class="btn ghost sm" id="net-take">Управлять руками отсюда</button>
+      </section>
+
       <div class="actions">
         <button class="btn signal" id="new-game">Новая партия <kbd>N</kbd></button>
       </div>
@@ -144,7 +157,8 @@
       <ul class="checks" id="checks"></ul>
     </section>
 
-    <section class="card setup-form">
+    <section class="card setup-form" data-net-lockable>
+      <p class="net-lock" data-net-lock hidden>Руками управляет другой ПК — настройка и позиции меняются там. Чтобы настраивать отсюда, нажмите «Управлять руками отсюда» на вкладке «Игра».</p>
       <div class="form">
         <fieldset>
           <legend>Устройства <small>одинаково на обеих вебках</small></legend>
@@ -327,7 +341,7 @@
   <!-- ========================== ПОЗИЦИИ ========================== -->
   <!-- Цепочки точек: гнездо лотка — взять фигурку, клетка — поставить (TTT.chainPlan). Уборка — те же цепочки задом наперёд -->
   <main class="teach" id="page-teach" hidden>
-    <section class="card teach-view">
+    <section class="card teach-view" data-net-lockable>
       <div class="card-head">
         <h2>Цепочки</h2>
         <div class="seg sm" id="teach-side" role="tablist" aria-label="Какую руку настраиваем">
@@ -341,7 +355,8 @@
       <p class="hint" id="teach-progress"></p>
     </section>
 
-    <section class="card teach-form">
+    <section class="card teach-form" data-net-lockable>
+      <p class="net-lock" data-net-lock hidden>Руками управляет другой ПК — настройка и позиции меняются там. Чтобы настраивать отсюда, нажмите «Управлять руками отсюда» на вкладке «Игра».</p>
       <div class="teach-now">
         <div><span class="hint">Где</span><b id="tn-cell">—</b></div>
         <div><span class="hint">Вылет</span><b id="tn-x">—</b><small>мм</small></div>
@@ -438,6 +453,7 @@
   <script src="assets/kinematics.js"></script>
   <script src="assets/driver.js"></script>
   <script src="assets/ttt.js"></script>
+  <script src="assets/room.js"></script>
   <script src="assets/game.js"></script>
 </body>
 </html>

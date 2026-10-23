@@ -281,6 +281,10 @@ fieldset:first-child { border-top: 0; padding-top: 0; }
 .right { margin-left: auto; }
 .hint { margin: 0; font-size: 13px; color: var(--steel); }
 .hint a { color: inherit; }
+/* несколько ПК: настройка и позиции на ПК, который не командует руками */
+.net-lock { margin: 0; padding: 12px 14px; border-radius: 14px; background: var(--alu); color: var(--ink); font-size: 14px; line-height: 1.4; box-shadow: inset 3px 0 0 var(--signal); }
+.net-locked { opacity: .45; pointer-events: none; user-select: none; }
+.net .btn { align-self: flex-start; }
 .input {
   height: 40px; width: 100%; min-width: 0; padding: 0 12px; border-radius: 12px; border: 0;
   box-shadow: inset 0 0 0 1px var(--rule); background: var(--alu); outline: 0; transition: box-shadow .15s;

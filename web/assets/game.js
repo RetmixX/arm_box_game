@@ -66,6 +66,18 @@
   if (/[?&]demo\b/.test(location.search)) S.demo = true;
   const save = () => write(KEY, S);
 
+  // Несколько ПК (scripts/server.py, раздел «несколько ПК» ниже). Роль страницы: solo — один ПК, как раньше;
+  // leader — этот ПК командует руками и лампами; follower — командует другой ПК, здесь экран и нажатия;
+  // wait — ещё не знаем, руки и лампы не трогаем
+  const SEAT_KEY = 'armbox.seat'; // за кого играет этот ПК — у каждого ПК свой
+  const net = {
+    room: null, role: 'wait', seat: read(SEAT_KEY).seat === 'O' ? 'O' : 'X',
+    lastSeq: 0, sent: { snap: '', set: '', ack: 0 }, publishing: false, claiming: false, handing: false,
+    beat: 0, claimAt: 0, wasLeader: false, offlineSince: 0, handTo: null,
+    notice: { n: 0, text: '' }, seen: null, shown: '', remote: null, backedUp: false,
+  };
+  const hw = () => net.role === 'solo' || net.role === 'leader'; // этой странице можно трогать руки и лампы
+
   let theme = read(SHARED).theme || (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
 
   /* ================================ адреса ================================ */
@@ -108,7 +120,8 @@
     clearTimeout(a.timer);
     if (a.driver) a.driver.dispose();
     const u = urls(side);
-    a.driver = S.demo ? new Driver.DemoDriver() : u ? new Driver.RealDriver(u.api, u.ws, u.lamp) : null;
+    // руками командует только одна страница: на других ПК драйверов нет — ни команд, ни опроса шины
+    a.driver = !hw() ? null : S.demo ? new Driver.DemoDriver() : u ? new Driver.RealDriver(u.api, u.ws, u.lamp) : null;
     Object.assign(a, { link: a.driver ? 'unknown' : 'none', err: '', pos: {}, lampKey: '', lampErr: '', speedApplied: null, speedErr: '' });
     if (!a.driver) { render(); return; }
     if (S.demo) a.driver.connect(); // движения игры — только POST /pos/set (REST), WebSocket не нужен
@@ -181,6 +194,7 @@
     try {
       for (let i = 0; i < plan.length; i++) {
         const s = plan[i];
+        if (!hw()) throw new Error('Руками теперь управляет другой ПК — движение остановлено');
         Object.assign(active, { i, label: s.label });
         renderProgress();
         await a.driver.move({ x: s.x, z: s.z, angel: s.angel, pov_gripper: s.pov_gripper, gripper_state: s.gripper_state }, 'rest');
@@ -343,8 +357,10 @@
   const gameBusy = () => !!(game.pending || game.thinking || game.error || game.cleaning);
   const turnSide = () => TTT.turnOf(game.board);
 
-  function canClick(i) {
-    return !game.board[i] && !game.res && !gameBusy() && !testing && playerOf(turnSide()) === 'human';
+  /** seat — за кого играет ПК, с которого нажали: вдвоём на двух ПК каждый ходит только за свой знак */
+  function canClick(i, seat) {
+    return !game.board[i] && !game.res && !gameBusy() && !testing && playerOf(turnSide()) === 'human'
+      && (net.role === 'solo' || S.mode !== 'pvp' || seat === turnSide());
   }
 
   async function makeMove(cell, side) {
@@ -361,7 +377,7 @@
       game.pending = null;
       // фигурка уже отпущена в клетке — сорвался подъём или стоянка: ход сделан, рука уйдёт вверх перед следующим
       if (S.tray[side].includes(cell)) {
-        toast('Рука ' + SIGN[side] + ' поставила фигурку, но не ушла на стоянку: ' + e.message);
+        share('Рука ' + SIGN[side] + ' поставила фигурку, но не ушла на стоянку: ' + e.message);
         commit(cell, side);
         return;
       }
@@ -388,7 +404,7 @@
 
   async function robotTurn() {
     const side = turnSide();
-    if (playerOf(side) !== 'robot' || game.res || gameBusy()) return;
+    if (!hw() || playerOf(side) !== 'robot' || game.res || gameBusy()) return;
     const id = game.id;
     game.thinking = true;
     render();
@@ -440,24 +456,38 @@
     }
   }
 
-  /** Новая партия; на поле фигурки — руки уберут их в лотки (или человек уберёт сам) */
-  async function newGame() {
-    if (game.pending || active || game.cleaning) { toast('Дождитесь, пока рука закончит'); return false; }
+  const handsBusy = () => !!(game.pending || active || game.cleaning);
+
+  /** Спросить там, где нажали: на поле фигурки — 'arms' (руки уберут) или 'manual' (убрал сам); '' — отмена */
+  async function askNew() {
+    if (!piecesOut()) return 'none';
+    const dlg = $('#dlg-new');
+    dlg.returnValue = '';
+    dlg.showModal();
+    const v = await new Promise((r) => dlg.addEventListener('close', () => r(dlg.returnValue), { once: true }));
+    return v === 'arms' || v === 'manual' ? v : '';
+  }
+
+  /** Новая партия; на поле фигурки — руки уберут их в лотки (или человек уберёт сам): choice — ответ askNew */
+  async function newGame(choice) {
+    if (handsBusy()) { share('Дождитесь, пока рука закончит'); return false; }
     if (piecesOut()) {
-      const dlg = $('#dlg-new');
-      dlg.returnValue = '';
-      dlg.showModal();
-      const v = await new Promise((r) => dlg.addEventListener('close', () => r(dlg.returnValue), { once: true }));
-      if (v === 'manual') {
+      if (choice === 'manual') {
         S.tray = TTT.emptyTray();
         save();
-      } else if (v !== 'arms' || !(await cleanup())) return false;
+      } else if (choice !== 'arms' || !(await cleanup())) return false;
     }
     resetGame();
     return true;
   }
 
   /* ================================ интерфейс ================================ */
+
+  /** Сообщение и на экранах других ПК (ведущий отправляет его вместе с состоянием партии) */
+  function share(text) {
+    toast(text);
+    if (net.role === 'leader') net.notice = { n: net.notice.n + 1, text };
+  }
 
   let toastTimer = null;
   function toast(text) {
@@ -498,7 +528,7 @@
       const v = game.board[i];
       const pend = game.pending && game.pending.cell === i ? game.pending.side : null;
       const err = game.error && game.error.kind === 'move' && game.error.cell === i ? game.error.side : null;
-      const can = canClick(i);
+      const can = canClick(i, net.seat);
       let want;
       if (v) want = 'v' + v + (game.fresh.has(i) ? '!' : '');
       else if (pend || err) want = 'g' + (pend || err);
@@ -618,6 +648,7 @@
   }
 
   function armState(side) {
+    if (!hw()) return net.remote ? net.remote[side].state : { cls: '', text: net.role === 'wait' ? 'подключение…' : 'руками управляет другой ПК' };
     const a = arms[side];
     if (S.demo) return { cls: active && active.side === side ? 'busy' : 'demo', text: active && active.side === side ? active.label : 'демо' };
     if (!a.driver) return { cls: '', text: 'адрес не задан', bad: true };
@@ -661,7 +692,7 @@
     $('#physical').checked = S.physical;
     SIDES.forEach((side) => { $('#sc-' + side).textContent = S.score[side]; $('#sc-' + side + '-name').textContent = nameOf(side); });
     $('#sc-D').textContent = S.score.D;
-    $('#new-game').disabled = !!(game.pending || active || game.cleaning);
+    $('#new-game').disabled = handsBusy();
   }
 
   function render() {
@@ -674,6 +705,7 @@
     renderTestState();
     renderSpeed();
     if (S.page === 'teach') renderTeach();
+    renderNet();
     syncLamps();
     dirty = true;
   }
@@ -684,19 +716,19 @@
     const b = e.target.closest('.cell');
     if (!b) return;
     const i = +b.dataset.i;
-    if (canClick(i)) makeMove(i, turnSide());
+    if (canClick(i, net.seat)) act('move', { cell: i });
   });
   boardEl.addEventListener('mouseenter', () => boardEl.classList.add('show-keys'));
   boardEl.addEventListener('mouseleave', () => boardEl.classList.remove('show-keys'));
 
-  $('#err-retry').addEventListener('click', async () => {
+  async function errRetry() {
     const e = game.error;
     if (!e) return;
     game.error = null;
     if (e.kind === 'clean') { if (await cleanup()) resetGame(); return; }
     makeMove(e.cell, e.side); // фигурка в схвате — рука сразу понесёт её к клетке
-  });
-  $('#err-accept').addEventListener('click', () => {
+  }
+  function errAccept() {
     const e = game.error;
     if (!e) return;
     if (e.kind === 'clean') { S.tray = TTT.emptyTray(); save(); resetGame(); return; }
@@ -707,8 +739,8 @@
       if (slot >= 0) setTray(e.side, slot, e.cell);
     }
     commit(e.cell, e.side);
-  });
-  $('#err-cancel').addEventListener('click', async () => {
+  }
+  async function errCancel() {
     const e = game.error;
     if (!e) return;
     game.error = null;
@@ -727,42 +759,96 @@
       game.error = Object.assign({}, e, { msg: 'Не удалось вернуть фигурку в лоток: ' + err.message });
       render();
     }
-  });
+  }
 
-  $('#new-game').addEventListener('click', () => newGame());
-  $('#score-reset').addEventListener('click', () => { S.score = { X: 0, O: 0, D: 0 }; save(); render(); });
-
-  /** Смена режима посреди партии начинает новую партию */
-  async function changeGameSetting(key, value) {
+  /** Смена режима посреди партии начинает новую партию; choice — ответ askNew */
+  async function changeGameSetting(key, value, choice) {
     if (S[key] === value) return;
     const prev = S[key];
     S[key] = value;
     if (game.board.some(Boolean) || gameBusy() || piecesOut()) {
-      if (!(await newGame())) { S[key] = prev; render(); return; }
+      if (!(await newGame(choice))) { S[key] = prev; render(); return; }
     } else resetGame();
     save();
     render();
   }
+
+  // посреди партии фигурки на поле разошлись бы с ходами на экране
+  const physicalLocked = () => handsBusy() || (game.board.some(Boolean) && !game.res);
+  function setPhysical(v) {
+    if (physicalLocked()) { render(); return; }
+    S.physical = v;
+    save();
+    render();
+  }
+
+  /**
+   * Всё, что меняет партию, идёт через act: на одном ПК и на ведущем выполняется сразу, на другом ПК
+   * уходит ведущему (server.py, intents). Ведущий проверяет нажатие сам — пока оно шло, партия могла измениться.
+   */
+  const ACTIONS = {
+    move: (d) => { const i = +d.cell; if (Number.isInteger(i) && i >= 0 && i < 9 && canClick(i, d.seat)) makeMove(i, turnSide()); },
+    new: (d) => newGame(d.choice),
+    retry: errRetry,
+    accept: errAccept,
+    cancel: errCancel,
+    set: (d) => {
+      const ok = (d.key === 'mode' && ['pvp', 'pvr'].includes(d.value)) || (d.key === 'human' && SIDES.includes(d.value));
+      if (ok) return changeGameSetting(d.key, d.value, d.choice);
+    },
+    level: (d) => { if (TTT.LEVELS[d.value]) { S.level = d.value; save(); render(); } },
+    physical: (d) => setPhysical(!!d.value),
+    score: () => { S.score = { X: 0, O: 0, D: 0 }; save(); render(); },
+    handover: (d) => handOver(d.from),
+  };
+  function act(type, data) {
+    if (hw()) return ACTIONS[type](Object.assign({ seat: net.seat, from: net.room && net.room.id }, data));
+    const r = net.room;
+    if (!r || r.offline || !r.leader) {
+      toast(r && r.offline ? 'Нет связи с сервером на руке — нажатие не отправлено' : 'Ведущий ПК ещё не выбран — нажмите ещё раз через пару секунд');
+      return;
+    }
+    r.intent(type, data).catch((e) => toast('Нажатие не дошло до ведущего ПК: ' + e.message));
+  }
+
+  $('#err-retry').addEventListener('click', () => act('retry'));
+  $('#err-accept').addEventListener('click', () => act('accept'));
+  $('#err-cancel').addEventListener('click', () => act('cancel'));
+
+  /** Окно «убрать фигурки» — на том ПК, где нажали; выполняет ведущий */
+  async function uiNew() {
+    if (handsBusy()) { toast('Дождитесь, пока рука закончит'); return; }
+    const choice = await askNew();
+    if (choice) act('new', { choice });
+  }
+  async function uiSet(key, value) {
+    if (S[key] === value) return;
+    let choice = 'none';
+    if (game.board.some(Boolean) || gameBusy() || piecesOut()) {
+      if (handsBusy()) { toast('Дождитесь, пока рука закончит'); return; }
+      choice = await askNew();
+      if (!choice) return;
+    }
+    act('set', { key, value, choice });
+  }
+
+  $('#new-game').addEventListener('click', uiNew);
+  $('#score-reset').addEventListener('click', () => act('score'));
   const segPick = (sel, key) => $(sel).addEventListener('click', (e) => {
     const b = e.target.closest('button[data-v]');
-    if (b) changeGameSetting(key, b.dataset.v);
+    if (b) uiSet(key, b.dataset.v);
   });
   segPick('#mode', 'mode');
   segPick('#human', 'human');
   $('#level').addEventListener('click', (e) => { // сложность можно менять на ходу
     const b = e.target.closest('button[data-v]');
-    if (b) { S.level = b.dataset.v; save(); render(); }
+    if (b) act('level', { value: b.dataset.v });
   });
   $('#physical').addEventListener('change', (e) => {
-    // посреди партии фигурки на поле разошлись бы с ходами на экране
-    if (game.pending || active || game.cleaning || (game.board.some(Boolean) && !game.res)) {
-      e.target.checked = S.physical;
-      toast('Переключайте между партиями — сейчас на поле идёт игра');
-      return;
-    }
-    S.physical = e.target.checked;
-    save();
-    render();
+    const v = e.target.checked;
+    e.target.checked = S.physical; // переключится, когда партия примет (на другом ПК — ведущий)
+    if (physicalLocked()) { toast('Переключайте между партиями — сейчас на поле идёт игра'); return; }
+    act('physical', { value: v });
   });
 
   window.addEventListener('keydown', (e) => {
@@ -771,8 +857,8 @@
     const d = /^(Digit|Numpad)([1-9])$/.exec(e.code);
     if (d) {
       const i = KEYS.indexOf(+d[2]);
-      if (canClick(i)) { e.preventDefault(); makeMove(i, turnSide()); }
-    } else if (e.code === 'KeyN') { e.preventDefault(); newGame(); }
+      if (canClick(i, net.seat)) { e.preventDefault(); act('move', { cell: i }); }
+    } else if (e.code === 'KeyN') { e.preventDefault(); uiNew(); }
   });
 
   /* ============================== схема стола ============================== */
@@ -1240,12 +1326,14 @@
     $$('#speed-presets button').forEach((b) => b.setAttribute('aria-checked', String(+b.dataset.v === S.speed)));
     const inp = $('#speed');
     if (document.activeElement !== inp) inp.value = S.speed;
-    $('#speed-state').textContent = SIDES.map((side) => {
-      const a = arms[side];
-      if (!a.driver) return 'Рука ' + SIGN[side] + ': не настроена';
-      if (a.speedErr && a.speedApplied !== S.speed) return 'Рука ' + SIGN[side] + ': ✗ ' + a.speedErr;
-      return 'Рука ' + SIGN[side] + ': ' + (a.speedApplied === S.speed ? S.speed + ' % ✓' : S.speed + ' % — выставится перед движением');
-    }).join(' · ');
+    $('#speed-state').textContent = SIDES.map(speedLine).join(' · ');
+  }
+  function speedLine(side) {
+    const a = arms[side];
+    if (!hw()) return net.remote ? net.remote[side].speed : 'Рука ' + SIGN[side] + ': скорость выставляет ведущий ПК';
+    if (!a.driver) return 'Рука ' + SIGN[side] + ': не настроена';
+    if (a.speedErr && a.speedApplied !== S.speed) return 'Рука ' + SIGN[side] + ': ✗ ' + a.speedErr;
+    return 'Рука ' + SIGN[side] + ': ' + (a.speedApplied === S.speed ? S.speed + ' % ✓' : S.speed + ' % — выставится перед движением');
   }
 
   function setSpeed(v) {
@@ -1754,7 +1842,7 @@
   $('#chain').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.matches('input[data-ck]')) e.target.blur(); });
 
   document.addEventListener('keydown', (e) => {
-    if (S.page !== 'teach' || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (S.page !== 'teach' || !hw() || e.metaKey || e.ctrlKey || e.altKey) return;
     const tag = (e.target && e.target.tagName) || '';
     if (/INPUT|TEXTAREA|SELECT/.test(tag) || document.querySelector('dialog[open]')) return;
     if (tag === 'BUTTON' && (e.key === 'Enter' || e.key === ' ')) return; // на кнопке — нажимается сама кнопка
@@ -1840,6 +1928,253 @@
     else if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
   });
 
+  /* ============================== несколько ПК ============================== */
+
+  // Страница открыта с scripts/server.py — комната (room.js): руками и лампами командует один ведущий ПК,
+  // он публикует снимок партии и общие настройки, остальные ПК показывают снимок и шлют ему нажатия.
+  // Ведущий подтверждает, что он ведущий, раз в BEAT_MS; без подтверждения дольше LOST_MS — останавливает руки:
+  // сервер к этому времени может отдать руки другому ПК (у него аренда 8 с), двух ведущих быть не должно.
+  const BEAT_MS = 2000;
+  const LOST_MS = 6000;
+  const SHARED_KEYS = ['dev', 'transport', 'lamps', 'speed', 'mode', 'human', 'level', 'physical', 'score', 'cal', 'tray'];
+  const BACKUP_KEY = 'armbox.game.local'; // свои настройки ПК до первой подмены общими
+
+  const sharedSettings = () => Object.fromEntries(SHARED_KEYS.map((k) => [k, S[k]]));
+
+  /** Общие настройки из комнаты — в S (и в localStorage этого ПК) */
+  function adoptSettings(set) {
+    if (!set || typeof set !== 'object') return;
+    if (!net.backedUp) {
+      const mine = sharedSettings();
+      if (JSON.stringify(mine) !== JSON.stringify(Object.assign({}, mine, set))) write(BACKUP_KEY, mine);
+      net.backedUp = true;
+    }
+    const d = DEFAULTS();
+    SHARED_KEYS.forEach((k) => { if (k in set) S[k] = set[k]; });
+    S.dev = Object.assign(d.dev, set.dev);
+    S.score = Object.assign({ X: 0, O: 0, D: 0 }, set.score);
+    S.tray = TTT.normalizeTray(set.tray);
+    SIDES.forEach((side) => { S.cal[side] = loadCal(side, set.cal && set.cal[side]); });
+    if (!TTT.LEVELS[S.level]) S.level = d.level;
+    save();
+    if (S.page === 'setup') fillForm();
+    if (S.page === 'teach') { renderChain(); renderTeach(); }
+  }
+
+  /** Что показывать на других ПК */
+  function snapshot() {
+    const armsOut = {};
+    SIDES.forEach((side) => {
+      const a = arms[side];
+      armsOut[side] = { state: armState(side), speed: speedLine(side), lamp: a.lamp, lampErr: a.lampErr, err: a.err, last: a.last || null, pos: a.pos };
+    });
+    return {
+      gid: game.id, board: game.board, res: game.res, pending: game.pending, thinking: game.thinking, error: game.error, cleaning: game.cleaning,
+      testing, active: active && { side: active.side, i: active.i, n: active.n, label: active.label, title: active.title },
+      notice: net.notice, arms: armsOut,
+    };
+  }
+
+  /** Снимок ведущего — на экран этого ПК */
+  function applySnapshot(snap) {
+    const key = JSON.stringify(snap);
+    if (!snap || key === net.shown) return false;
+    net.shown = key;
+    const board = Array.isArray(snap.board) && snap.board.length === 9 ? snap.board : Array(9).fill(null);
+    if (snap.gid !== game.id) game.fresh.clear();
+    board.forEach((v, i) => { if (v && game.board[i] !== v) game.fresh.add(i); }); // новая фигурка — рисуем с анимацией
+    Object.assign(game, { id: snap.gid, board: board.slice(), res: snap.res || null, pending: snap.pending || null, thinking: !!snap.thinking, error: snap.error || null, cleaning: !!snap.cleaning, party: null });
+    active = snap.active || null;
+    testing = !!snap.testing;
+    net.remote = {};
+    SIDES.forEach((side) => {
+      const s = (snap.arms && snap.arms[side]) || {};
+      net.remote[side] = { state: s.state || { cls: '', text: '—' }, speed: s.speed || '' };
+      Object.assign(arms[side], { lamp: Object.assign({}, LAMP_OFF, s.lamp), lampErr: s.lampErr || '', err: s.err || '', last: s.last || null, pos: s.pos || {} });
+    });
+    // сообщение ведущего — один раз; при первом снимке старые не показываем
+    const n = net.room.leader + ':' + (snap.notice ? snap.notice.n : 0);
+    if (net.seen !== null && n !== net.seen && snap.notice && snap.notice.text) toast(snap.notice.text);
+    net.seen = n;
+    return true;
+  }
+
+  function becomeLeader() {
+    const r = net.room;
+    const snap = r.snapshot;
+    Object.assign(net, { role: 'leader', wasLeader: true, beat: Date.now(), handTo: null, notice: { n: 0, text: '' }, sent: { snap: '', set: '', ack: 0 } });
+    if (r.settings) { adoptSettings(r.settings); net.sent.set = JSON.stringify(sharedSettings()); }
+    // партия — с того места, где её оставил прежний ведущий; фигурки на поле — по лоткам
+    const was = snap && (snap.pending || snap.cleaning || snap.active);
+    const b = S.physical ? TTT.boardFromTray(S.tray) : snap && Array.isArray(snap.board) && snap.board.length === 9 ? snap.board.slice() : null;
+    game.id++;
+    Object.assign(game, { board: b || Array(9).fill(null), pending: null, thinking: false, cleaning: false, party: null, error: (snap && snap.error) || null });
+    game.res = TTT.result(game.board);
+    game.fresh.clear();
+    active = null;
+    testing = false;
+    startArms();
+    render();
+    if (was) {
+      // прежний ведущий пропал посреди движения: его рука могла ещё доезжать — робот ходит не сразу
+      share('Руки перешли к этому ПК посреди движения — проверьте фигурки на поле и в лотках');
+      const id = game.id;
+      setTimeout(() => { if (id === game.id) robotTurn(); }, 5000);
+    } else {
+      toast('Руками и лампами управляет этот ПК');
+      robotTurn();
+    }
+  }
+
+  /** Перестать командовать руками: драйверы закрываются, план в полёте остановится перед следующей точкой */
+  function stepDown(role, why) {
+    net.role = role;
+    net.shown = ''; // следующий снимок ведущего — на экран целиком
+    startArms();
+    if (why) toast(why);
+    render();
+  }
+
+  function onRoom(fresh) {
+    const r = net.room;
+    if (fresh.boot) { net.lastSeq = 0; net.sent = { snap: '', set: '', ack: 0 }; } // сервер перезапущен
+    if (net.handing) return;
+    const mine = r.leader === r.id;
+    if (mine && net.role !== 'leader' && !r.offline) becomeLeader();
+    else if (!mine && net.role === 'leader' && r.leader) stepDown('follower', 'Руками теперь управляет другой ПК');
+    else if (!mine && net.role !== 'leader') net.role = r.leader ? 'follower' : 'wait';
+    if (net.role === 'leader') { runIntents(); renderNet(); return; }
+    if (fresh.settings && r.settings) adoptSettings(r.settings);
+    applySnapshot(r.snapshot);
+    render();
+  }
+
+  /** Нажатия с других ПК — по порядку; каждое ведущий проверяет сам (canClick и т. п.) */
+  function runIntents() {
+    for (const it of net.room.intents) {
+      if (!(it.seq > net.lastSeq)) continue;
+      net.lastSeq = it.seq;
+      const fn = ACTIONS[it.type];
+      if (fn) Promise.resolve().then(() => fn(it)).catch((e) => share('Не выполнено нажатие с другого ПК: ' + e.message));
+    }
+  }
+
+  async function publish() {
+    const snap = JSON.stringify(snapshot());
+    const set = JSON.stringify(sharedSettings());
+    const ack = net.lastSeq;
+    if (net.publishing || (snap === net.sent.snap && set === net.sent.set && ack === net.sent.ack)) return;
+    net.publishing = true;
+    try {
+      await net.room.publish(snap, set === net.sent.set ? null : set, ack);
+      net.sent = { snap, set, ack };
+      net.beat = Date.now();
+    } catch (_) { /* 409 — ведущим стал другой ПК (onRoom уже знает); нет связи — следит netTick */ } finally {
+      net.publishing = false;
+    }
+  }
+
+  /**
+   * Отдать руки ПК to (его кнопка «Управлять отсюда»): сначала остановиться и отправить последнее состояние.
+   * Руки заняты — просьба запоминается, netTick отдаст их, когда закончат.
+   */
+  async function handOver(to) {
+    const r = net.room;
+    if (net.role !== 'leader' || !to || to === r.id || !r.clients.some((c) => c.id === to)) { net.handTo = null; return; }
+    if (handsBusy() || testing || game.thinking) {
+      if (net.handTo !== to) share('Руки отдадим другому ПК, когда они закончат движение');
+      net.handTo = to;
+      return;
+    }
+    net.handTo = null;
+    net.handing = true;
+    try {
+      net.sent.snap = '';
+      await publish();
+      net.role = 'follower';
+      startArms();
+      await r.release(to);
+    } catch (_) { /* не отдали — onRoom разберётся по виду комнаты */ } finally {
+      net.handing = false;
+      onRoom({});
+    }
+  }
+
+  function claim() {
+    const r = net.room;
+    net.claiming = true;
+    net.claimAt = Date.now();
+    return r.claim(net.wasLeader || net.role === 'leader').then(() => { if (net.role === 'leader') net.beat = Date.now(); }, (e) => {
+      if (net.role === 'leader' && e.status === 409) stepDown(r.leader ? 'follower' : 'wait', 'Руками теперь управляет другой ПК');
+    }).finally(() => { net.claiming = false; });
+  }
+
+  function netTick() {
+    const r = net.room;
+    const now = Date.now();
+    if (net.handing) return;
+    if (net.role === 'leader') {
+      if (now - net.beat > LOST_MS) { stepDown('wait', 'Нет связи с сервером на руке — руки остановлены, пока связь не вернётся'); return; }
+      if (!net.claiming && now - net.claimAt > BEAT_MS) claim();
+      if (net.handTo) handOver(net.handTo);
+      if (net.role === 'leader' && !net.handing) publish();
+    } else if (!r.leader && !r.offline && !net.claiming && now - net.claimAt > BEAT_MS) claim(); // ведущего нет — может, мы
+    if (r.offline !== !!net.offlineSince) { net.offlineSince = r.offline ? now : 0; renderNet(); }
+  }
+
+  function renderNet() {
+    const r = net.room;
+    const card = $('#net-card');
+    card.hidden = !r;
+    const locked = !!r && !hw();
+    $$('[data-net-lock]').forEach((el) => { el.hidden = !locked; });
+    $$('[data-net-lockable] > :not([data-net-lock])').forEach((el) => { el.inert = locked; el.classList.toggle('net-locked', locked); });
+    if (!r) return;
+    $('#net-role').textContent = net.role === 'leader' ? 'руки — у этого ПК' : r.offline ? 'нет связи' : net.role === 'follower' ? 'руки — у другого ПК' : 'выбираем ведущий ПК…';
+    $('#net-seat-field').hidden = S.mode !== 'pvp';
+    $$('#net-seat button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.v === net.seat)));
+    const others = r.clients.filter((c) => c.id !== r.id);
+    const lines = [];
+    if (r.offline) lines.push('Нет связи с сервером на руке — нажатия не отправляются. Связь вернётся — страница подключится сама.');
+    lines.push('ПК в игре: ' + (others.length + 1) + (S.mode === 'pvp' ? ' · за ✕: ' + (r.clients.filter((c) => c.seat === 'X').length || 0) + ', за ○: ' + (r.clients.filter((c) => c.seat === 'O').length || 0) : ''));
+    if (S.mode === 'pvp' && others.some((c) => c.seat === net.seat)) lines.push('Другой ПК тоже играет за ' + SIGN[net.seat] + ' — на одном из них выберите другой знак.');
+    $('#net-text').textContent = lines.join(' ');
+    const take = $('#net-take');
+    take.hidden = net.role === 'leader';
+    take.disabled = r.offline || net.claiming;
+  }
+
+  $('#net-seat').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-v]');
+    if (!b || b.dataset.v === net.seat) return;
+    net.seat = b.dataset.v;
+    write(SEAT_KEY, { seat: net.seat });
+    if (net.room) net.room.seat = net.seat;
+    render();
+  });
+  $('#net-take').addEventListener('click', () => {
+    const r = net.room;
+    if (!r || net.role === 'leader') return;
+    if (!r.leader) { claim().then(renderNet); renderNet(); return; }
+    act('handover');
+    toast('Попросили ведущий ПК отдать руки');
+  });
+
+  async function netStart() {
+    const r = window.Room ? await Room.connect(net.seat) : null;
+    if (!r) { // страница не с server.py — один ПК, как раньше
+      net.role = 'solo';
+      startArms();
+      robotTurn();
+      return;
+    }
+    net.room = r;
+    r.onChange = onRoom;
+    onRoom({ settings: true });
+    setInterval(netTick, 250);
+    window.addEventListener('pagehide', () => { if (net.role === 'leader') r.releaseBeacon(); });
+  }
+
   /* ================================ старт ================================ */
 
   if (!Driver.CAMERA) $$('[data-camera]').forEach((el) => { el.hidden = true; }); // камеры пока нет
@@ -1847,7 +2182,7 @@
   startArms();
   setPage(['setup', 'teach'].includes(S.page) ? S.page : 'play');
   render();
-  robotTurn();
+  netStart(); // руки — только после выбора роли: один ПК или ведущий
   requestAnimationFrame(frame);
   if (droppedFor.length) {
     save();
