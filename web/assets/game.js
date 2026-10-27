@@ -350,10 +350,11 @@
     if (b && b.some(Boolean)) { game.board = b; game.res = TTT.result(b); }
   }
 
-  const robotSide = () => (S.mode === 'pvr' ? TTT.other(S.human) : null);
-  const playerOf = (side) => (S.mode === 'pvr' && side !== S.human ? 'robot' : 'human');
+  // режимы: pvp — вдвоём, pvr — с роботом, rvr — руки играют между собой (демонстрация, партии по кругу)
+  const robotSide = () => (S.mode === 'pvr' ? TTT.other(S.human) : S.mode === 'rvr' ? turnSide() : null);
+  const playerOf = (side) => (S.mode === 'rvr' || (S.mode === 'pvr' && side !== S.human) ? 'robot' : 'human');
   const duo = () => !!net.room && !!net.seat && S.mode === 'pvp'; // вдвоём на двух ПК: у этого ПК своя команда
-  const nameOf = (side) => (S.mode === 'pvr' ? (side === S.human ? 'Вы' : 'Робот') : duo() ? (side === net.seat ? 'Вы' : 'Соперник') : 'Игрок ' + SIGN[side]);
+  const nameOf = (side) => (S.mode === 'rvr' ? 'Робот ' + SIGN[side] : S.mode === 'pvr' ? (side === S.human ? 'Вы' : 'Робот') : duo() ? (side === net.seat ? 'Вы' : 'Соперник') : 'Игрок ' + SIGN[side]);
   const gameBusy = () => !!(game.pending || game.thinking || game.error || game.cleaning);
   const turnSide = () => TTT.turnOf(game.board);
 
@@ -399,20 +400,39 @@
       if (!game.res.draw) startParty(game.res.side);
     }
     render();
-    if (!game.res) robotTurn();
+    robotTurn();
   }
 
   async function robotTurn() {
+    if (game.res) { demoNext(); return; }
     const side = turnSide();
-    if (!hw() || playerOf(side) !== 'robot' || game.res || gameBusy()) return;
+    if (!hw() || playerOf(side) !== 'robot' || gameBusy()) return;
     const id = game.id;
     game.thinking = true;
     render();
     await sleep(700);
     if (id !== game.id) return;
     game.thinking = false;
+    if (playerOf(side) !== 'robot') { render(); return; } // пока думал, режим сменили — ход за человеком
     const cell = TTT.chooseMove(game.board, side, S.level);
     makeMove(cell, side);
+  }
+
+  // «Роботы»: партия кончилась — пауза (лампа победителя как раз отпереливается), уборка, новая партия, и так по кругу.
+  // Сбой хода или уборки круг останавливает: окно ошибки ждёт человека, «Повторить» продолжает круг
+  const DEMO_PAUSE_MS = 5000;
+  let demoTimer = null;
+  function demoNext() {
+    clearTimeout(demoTimer);
+    demoTimer = null;
+    if (!hw() || S.mode !== 'rvr' || !game.res || game.error) return;
+    const id = game.id;
+    demoTimer = setTimeout(() => {
+      demoTimer = null;
+      if (id !== game.id || !hw() || S.mode !== 'rvr' || game.error) return;
+      if (handsBusy() || testing) { demoNext(); return; } // рука занята проверкой — подождём ещё
+      newGame('arms');
+    }, DEMO_PAUSE_MS);
   }
 
   function resetGame() {
@@ -590,7 +610,9 @@
         title.textContent = S.mode === 'pvr' ? (w === S.human ? 'Вы победили!' : 'Победил робот') : 'Победа ' + SIGN[w];
       }
       const lost = !game.res.draw && S.mode === 'pvr' && game.res.side !== S.human;
-      text.textContent = lost ? 'Попробуйте ещё раз или выберите уровень полегче'
+      if (!game.res.draw && S.mode === 'rvr') title.textContent = 'Победил робот ' + SIGN[game.res.side];
+      text.textContent = S.mode === 'rvr' ? (S.physical && piecesOut() ? 'Через 5 секунд руки уберут фигурки — и новая партия' : 'Через 5 секунд — новая партия')
+        : lost ? 'Попробуйте ещё раз или выберите уровень полегче'
         : !game.res.draw ? 'Три в ряд — ' + game.res.line.map(TTT.cellName).join(', ')
           : S.physical ? 'Новая партия — руки уберут фигурки в лотки' : 'Начните новую партию';
       return;
@@ -604,14 +626,15 @@
     } else if (game.pending) {
       mark.classList.add('pulse');
       title.textContent = game.pending.back ? 'Рука ' + SIGN[s] + ' возвращает фигурку' : 'Рука ' + SIGN[s] + ' ставит фигурку';
-      text.textContent = (game.pending.back ? 'В лоток' : 'Клетка ' + TTT.cellName(game.pending.cell)) + ' · ' + (S.mode === 'pvr' ? (s === S.human ? 'ваш ход' : 'ход робота') : 'игрок ' + SIGN[s]);
+      text.textContent = (game.pending.back ? 'В лоток' : 'Клетка ' + TTT.cellName(game.pending.cell)) + ' · ' + (S.mode === 'rvr' ? 'робот ' + SIGN[s] : S.mode === 'pvr' ? (s === S.human ? 'ваш ход' : 'ход робота') : 'игрок ' + SIGN[s]);
     } else if (game.thinking) {
       mark.classList.add('pulse');
-      title.textContent = 'Робот думает';
+      title.textContent = S.mode === 'rvr' ? 'Робот ' + SIGN[s] + ' думает' : 'Робот думает';
       text.textContent = 'Уровень: ' + TTT.LEVELS[S.level].name.toLowerCase();
     } else {
-      title.textContent = S.mode === 'pvr' ? (playerOf(s) === 'human' ? 'Ваш ход' : 'Ход робота') : duo() ? (s === net.seat ? 'Ваш ход' : 'Ход соперника') : 'Ход ' + SIGN[s];
-      text.textContent = testing ? 'Рука занята проверкой на вкладке «Настройка» или «Позиции»'
+      title.textContent = S.mode === 'rvr' ? 'Ход робота ' + SIGN[s] : S.mode === 'pvr' ? (playerOf(s) === 'human' ? 'Ваш ход' : 'Ход робота') : duo() ? (s === net.seat ? 'Ваш ход' : 'Ход соперника') : 'Ход ' + SIGN[s];
+      text.textContent = S.mode === 'rvr' ? (game.board.some(Boolean) ? 'Руки играют между собой' : 'Руки играют между собой — партии идут по кругу')
+        : testing ? 'Рука занята проверкой на вкладке «Настройка» или «Позиции»'
         : duo() && s !== net.seat ? 'Соперник выбирает клетку на своём ПК' : 'Выберите клетку · клавиши 1–9';
     }
   }
@@ -667,7 +690,7 @@
   }
 
   function renderArms() {
-    const role = (side) => (S.mode === 'pvr' ? (side === S.human ? 'ваша' : 'робота') : duo() ? (side === net.seat ? 'ваша' : 'соперника') : 'игрока ' + SIGN[side]);
+    const role = (side) => (S.mode === 'rvr' ? 'робота ' + SIGN[side] : S.mode === 'pvr' ? (side === S.human ? 'ваша' : 'робота') : duo() ? (side === net.seat ? 'ваша' : 'соперника') : 'игрока ' + SIGN[side]);
     $('#arm-cards').innerHTML = SIDES.map((side) => {
       const st = armState(side);
       const a = arms[side];
@@ -690,7 +713,7 @@
     $$('#mode button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.v === S.mode)));
     $$('#human button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.v === S.human)));
     $$('#level button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.v === S.level)));
-    $$('[data-show="pvr"]').forEach((el) => { el.hidden = S.mode !== 'pvr'; });
+    $$('[data-show]').forEach((el) => { el.hidden = !el.dataset.show.split(' ').includes(S.mode); });
     $('#physical').checked = S.physical;
     SIDES.forEach((side) => { $('#sc-' + side).textContent = S.score[side]; $('#sc-' + side + '-name').textContent = nameOf(side); });
     $('#sc-D').textContent = S.score.D;
@@ -767,6 +790,15 @@
   async function changeGameSetting(key, value, choice) {
     if (S[key] === value) return;
     const prev = S[key];
+    if (choice === 'keep') { // выход из «Роботов», пока рука ставит фигурку: ход доделает, дальше партия в новом режиме
+      if (key !== 'mode' || prev !== 'rvr') return;
+      S.mode = value;
+      save();
+      share('Руки доделают начатое движение — дальше играют люди');
+      render();
+      robotTurn();
+      return;
+    }
     S[key] = value;
     if (game.board.some(Boolean) || gameBusy() || piecesOut()) {
       if (!(await newGame(choice))) { S[key] = prev; render(); return; }
@@ -795,7 +827,7 @@
     accept: errAccept,
     cancel: errCancel,
     set: (d) => {
-      const ok = (d.key === 'mode' && ['pvp', 'pvr'].includes(d.value)) || (d.key === 'human' && SIDES.includes(d.value));
+      const ok = (d.key === 'mode' && ['pvp', 'pvr', 'rvr'].includes(d.value)) || (d.key === 'human' && SIDES.includes(d.value));
       if (ok) return changeGameSetting(d.key, d.value, d.choice);
     },
     level: (d) => { if (TTT.LEVELS[d.value]) { S.level = d.value; save(); render(); } },
@@ -826,7 +858,8 @@
   async function uiSet(key, value) {
     if (S[key] === value) return;
     let choice = 'none';
-    if (game.board.some(Boolean) || gameBusy() || piecesOut()) {
+    if (key === 'mode' && S.mode === 'rvr' && handsBusy()) choice = 'keep'; // у демонстрации руки заняты почти всегда
+    else if (game.board.some(Boolean) || gameBusy() || piecesOut()) {
       if (handsBusy()) { toast('Дождитесь, пока рука закончит'); return; }
       choice = await askNew();
       if (!choice) return;
@@ -2145,6 +2178,7 @@
     if (r.offline) lines.push('Нет связи с сервером на руке — нажатия не отправляются. Связь вернётся — страница подключится сама.');
     if (!net.seat) { /* окно «обе команды заняты» */ }
     else if (players.length < 2) lines.push('Второй игрок ещё не подключился — откройте игру на другом ПК, ему достанется ' + SIGN[TTT.other(net.seat)] + '.');
+    else if (S.mode === 'rvr') lines.push('Режим «Роботы»: руки играют между собой. Чтобы сыграть самим, выберите «Вдвоём».');
     else if (S.mode === 'pvp') lines.push('Вы ходите за ' + SIGN[net.seat] + ', соперник — за ' + SIGN[TTT.other(net.seat)] + '. Фигурку ставит рука команды, чей ход.');
     else lines.push('Оба игрока подключены. Чтобы играть друг против друга, выберите режим «Вдвоём».');
     $('#net-text').textContent = lines.join(' ');
@@ -2158,7 +2192,7 @@
     const n = net.room.clients.filter((c) => c.seat).length;
     const was = net.players;
     net.players = n;
-    if (n < 2 || (was !== null && was >= 2) || S.mode === 'pvp') return;
+    if (n < 2 || (was !== null && was >= 2) || S.mode !== 'pvr') return; // «Роботы» — демонстрация, её не прерываем
     if (!game.board.some(Boolean) && !gameBusy() && !piecesOut() && !testing) {
       changeGameSetting('mode', 'pvp', 'none');
       share('Подключился второй игрок — режим «Вдвоём»: каждый ходит за свою команду');
